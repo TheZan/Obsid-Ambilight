@@ -15,3 +15,4 @@ pub mod ipc;
 pub mod platform;
 pub mod protocol;
 pub mod reconnect;
+pub mod ui;
