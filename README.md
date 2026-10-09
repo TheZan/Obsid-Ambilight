@@ -13,7 +13,7 @@ Ambilight, without Yeelight Station, SignalRGB, cloud accounts or a web view.
 | Stage 0 — Power / brightness / RGB / `get_prop` | ✅ protocol confirmed |
 | Stage 0 — Direct mode + `update_leds` streaming at 20 FPS | ✅ protocol confirmed |
 | Stage 0 — Leaving direct mode (`deactivate_fx_mode`) | ✅ confirmed on hardware; Apple Home outages seen twice, not reproducible |
-| Stage 1 — tray, settings window (RU/EN), static control, reconnect, single instance | ✅ implemented, ⏳ hardware checklist |
+| Stage 1 — tray, settings window (RU/EN), static control, reconnect, single instance | ✅ implemented and verified on hardware |
 | Ambilight, Windows lifecycle (autostart, shutdown, sleep) | Stages 2–3 |
 
 Details: [docs/protocol.md](docs/protocol.md), hardware checklist:
