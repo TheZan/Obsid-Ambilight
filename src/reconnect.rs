@@ -35,10 +35,10 @@ pub fn resolve(
     mut probe: impl FnMut(Ipv4Addr) -> Option<DiscoveredDevice>,
     mut discover: impl FnMut() -> Vec<DiscoveredDevice>,
 ) -> Option<Resolution> {
-    if let Some(ip) = last_ip {
-        if let Some(dev) = probe(ip).filter(|d| d.id == id) {
-            return Some(Resolution::SavedIp(dev));
-        }
+    if let Some(ip) = last_ip
+        && let Some(dev) = probe(ip).filter(|d| d.id == id)
+    {
+        return Some(Resolution::SavedIp(dev));
     }
     discover().into_iter().find(|d| d.id == id).map(Resolution::Discovered)
 }

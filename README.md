@@ -22,7 +22,7 @@ Details: [docs/protocol.md](docs/protocol.md), hardware checklist:
 
 ## Build
 
-Requires Rust stable (1.85+) on Windows x64.
+Requires Rust stable (1.95+, required by egui 0.36) on Windows x64.
 
 ```bash
 cargo build --release

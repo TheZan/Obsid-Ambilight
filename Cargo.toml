@@ -2,7 +2,7 @@
 name = "obsid-ambilight"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 description = "Lightweight local controller and Ambilight for the Yeelight Obsid (Chameleon2) RGBIC strip"
 publish = false
 

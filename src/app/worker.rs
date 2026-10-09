@@ -248,18 +248,18 @@ fn run(ctrl: &mut Controller, link: &mut dyn DeviceLink, rx: &Receiver<Command>,
                 let mut batch = vec![first];
                 batch.extend(rx.try_iter());
                 // Throttle: wait out the minimum interval, collecting newer commands.
-                if batch.iter().any(Command::is_light_change) {
-                    if let Some(last) = state.last_apply {
-                        let ready_at = last + ctx.options.min_apply_interval;
-                        while let Some(rest) = ready_at.checked_duration_since(Instant::now()) {
-                            match rx.recv_timeout(rest) {
-                                Ok(cmd) => batch.push(cmd),
-                                Err(RecvTimeoutError::Timeout) => break,
-                                Err(RecvTimeoutError::Disconnected) => break,
-                            }
+                if batch.iter().any(Command::is_light_change)
+                    && let Some(last) = state.last_apply
+                {
+                    let ready_at = last + ctx.options.min_apply_interval;
+                    while let Some(rest) = ready_at.checked_duration_since(Instant::now()) {
+                        match rx.recv_timeout(rest) {
+                            Ok(cmd) => batch.push(cmd),
+                            Err(RecvTimeoutError::Timeout) => break,
+                            Err(RecvTimeoutError::Disconnected) => break,
                         }
-                        batch.extend(rx.try_iter());
                     }
+                    batch.extend(rx.try_iter());
                 }
                 for cmd in coalesce(batch) {
                     process(ctrl, link, ctx, &mut state, Event::Command(cmd));
@@ -307,10 +307,10 @@ fn process(ctrl: &mut Controller, link: &mut dyn DeviceLink, ctx: &Ctx, st: &mut
                 }
                 Action::OpenSettings => (ctx.notify)(Notice::OpenSettings),
                 Action::Shutdown { power_off_ip } => {
-                    if let Some(ip) = power_off_ip {
-                        if let Err(e) = link.power_off_for_exit(ip) {
-                            info!(%e, "power off on exit failed");
-                        }
+                    if let Some(ip) = power_off_ip
+                        && let Err(e) = link.power_off_for_exit(ip)
+                    {
+                        info!(%e, "power off on exit failed");
                     }
                     save_now(ctrl, ctx, st);
                     st.exit = true;
@@ -327,9 +327,12 @@ fn save_now(ctrl: &mut Controller, ctx: &Ctx, st: &mut RunState) {
     if st.save_at.take().is_none() {
         return;
     }
-    if let Some(path) = &ctx.config_path {
-        if let Err(e) = config::save(path, ctrl.config()) {
-            ctrl.record_error(format!("could not save settings: {e}"));
-        }
+    if let Some(path) = &ctx.config_path
+        && let Err(e) = config::save(path, ctrl.config())
+    {
+        ctrl.record_error(format!("could not save settings: {e}"));
+        // Saving runs after the last publish; show the error right away.
+        let session_open = ctx.snapshot().session_open;
+        ctx.publish_snapshot(ctrl.snapshot(session_open));
     }
 }

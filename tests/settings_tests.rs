@@ -31,3 +31,19 @@ fn summary_lists_key_facts_without_secrets() {
     }
     assert!(!text.to_lowercase().contains("token"));
 }
+
+#[test]
+fn hex_commit_applies_only_real_changes() {
+    use obsid_ambilight::protocol::Rgb;
+    use obsid_ambilight::ui::settings::lighting::{HexCommit, hex_commit};
+    let current = Rgb::new(0xF5, 0xD4, 0xA1);
+    assert_eq!(hex_commit("#123456", current), HexCommit::Apply(Rgb::new(0x12, 0x34, 0x56)));
+    assert_eq!(hex_commit(" 123456 ", current), HexCommit::Apply(Rgb::new(0x12, 0x34, 0x56)));
+    assert_eq!(
+        hex_commit("#f5d4a1", current),
+        HexCommit::Unchanged,
+        "focus loss on the same colour must not power the strip on"
+    );
+    assert_eq!(hex_commit("#000000", current), HexCommit::Black);
+    assert_eq!(hex_commit("zz", current), HexCommit::Invalid);
+}

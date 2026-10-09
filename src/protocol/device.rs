@@ -82,13 +82,13 @@ impl<T: Transport> Chameleon2<T> {
 
     /// Call periodically; sends a keep-alive when one is due.
     pub fn tick(&mut self, now: Instant) -> Result<()> {
-        if self.session.keep_alive_due(now) {
-            if let Err(e) = self.session.keep_alive() {
-                if !self.session.is_open() {
-                    self.direct = false;
-                }
-                return Err(e);
+        if self.session.keep_alive_due(now)
+            && let Err(e) = self.session.keep_alive()
+        {
+            if !self.session.is_open() {
+                self.direct = false;
             }
+            return Err(e);
         }
         Ok(())
     }

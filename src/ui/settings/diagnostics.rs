@@ -69,10 +69,10 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, copied_at: &mut Opt
 
     ui.add_space(8.0);
     ui.horizontal(|ui| {
-        if ui.button(s.open_logs).clicked() {
-            if let Ok(dir) = paths::logs_dir() {
-                platform::open_folder(&dir);
-            }
+        if ui.button(s.open_logs).clicked()
+            && let Ok(dir) = paths::logs_dir()
+        {
+            platform::open_folder(&dir);
         }
         if ui.button(s.copy_summary).clicked() {
             ui.ctx().copy_text(summary(snap));

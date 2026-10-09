@@ -171,11 +171,11 @@ impl eframe::App for SettingsApp {
             let Some(snap) = snap else {
                 ui.add_space(24.0);
                 ui.label(s.backend_down);
-                if ui.add_enabled(!self.started_backend, egui::Button::new(s.start_backend)).clicked() {
-                    if let Ok(exe) = std::env::current_exe() {
-                        let _ = std::process::Command::new(exe).spawn();
-                        self.started_backend = true;
-                    }
+                if ui.add_enabled(!self.started_backend, egui::Button::new(s.start_backend)).clicked()
+                    && let Ok(exe) = std::env::current_exe()
+                {
+                    let _ = std::process::Command::new(exe).spawn();
+                    self.started_backend = true;
                 }
                 return;
             };

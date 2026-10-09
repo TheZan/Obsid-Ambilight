@@ -353,3 +353,30 @@ fn exit_is_not_allowed_over_ipc() {
     assert!(Command::SetPower { on: true }.is_light_change());
     assert!(!Command::Discover.is_light_change());
 }
+
+#[test]
+fn backoff_keeps_growing_when_strip_is_found_but_commands_fail() {
+    let (mut c, now) = ready();
+    c.handle(Event::Command(Command::SetPower { on: true }), now);
+    c.handle(Event::Applied(Err("timeout".into())), now);
+    let first = c.next_deadline().unwrap() - now;
+
+    // Discovery finds the strip again, but the re-sent change fails again.
+    let t1 = now + first;
+    c.handle(Event::Tick, t1);
+    let a = c.handle(Event::Resolved(Ok(Resolved { device: dev("dcda0cd778bc", IP), verified: true })), t1);
+    assert!(a.iter().any(|x| matches!(x, Action::Apply { .. })));
+    c.handle(Event::Applied(Err("timeout".into())), t1);
+    let second = c.next_deadline().unwrap() - t1;
+    assert!(second >= Duration::from_secs(2), "backoff must not reset before a command succeeds: {second:?}");
+
+    // A successful apply resets it.
+    let t2 = t1 + second;
+    c.handle(Event::Tick, t2);
+    c.handle(Event::Resolved(Ok(Resolved { device: dev("dcda0cd778bc", IP), verified: true })), t2);
+    c.handle(Event::Applied(Ok(())), t2);
+    c.handle(Event::Command(Command::SetPower { on: true }), t2);
+    c.handle(Event::Applied(Err("timeout".into())), t2);
+    let third = c.next_deadline().unwrap() - t2;
+    assert!(third <= Duration::from_secs(2), "reset after success: {third:?}");
+}

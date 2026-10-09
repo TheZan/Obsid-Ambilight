@@ -167,7 +167,7 @@ pub fn encode_leds(colors: &[Rgb]) -> Result<String> {
 
 /// Inverse of [`encode_leds`]; used by tests and diagnostics.
 pub fn decode_leds(s: &str) -> Option<Vec<Rgb>> {
-    if s.len() % 4 != 0 {
+    if !s.len().is_multiple_of(4) {
         return None;
     }
     let idx = |b: u8| B64.iter().position(|&x| x == b).map(|p| p as u32);

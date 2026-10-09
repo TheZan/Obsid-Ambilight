@@ -168,7 +168,10 @@ impl Controller {
                 Vec::new()
             }
             Event::Discovered(result) => self.on_discovered(result),
-            Event::Applied(Ok(())) => Vec::new(),
+            Event::Applied(Ok(())) => {
+                self.backoff.reset();
+                Vec::new()
+            }
             Event::Applied(Err(e)) => {
                 self.record_error(e);
                 // Whatever was being sent, re-send the user's full state later.
@@ -256,8 +259,11 @@ impl Controller {
             actions.push(Action::SaveConfig);
         }
         self.become_ready(r.device, r.verified);
-        if let Some(change) = self.pending.take() {
-            actions.push(self.apply_action(change));
+        match self.pending.take() {
+            // Being found is not enough when commands keep failing: the
+            // backoff resets only after the pending change is applied.
+            Some(change) => actions.push(self.apply_action(change)),
+            None => self.backoff.reset(),
         }
         actions
     }
@@ -268,7 +274,6 @@ impl Controller {
         self.verified = verified;
         self.retry_at = None;
         self.retry_in_secs = None;
-        self.backoff.reset();
     }
 
     fn on_discovered(&mut self, result: Result<Vec<DeviceInfo>, String>) -> Vec<Action> {
@@ -295,6 +300,8 @@ impl Controller {
         d.last_ip = Some(dev.ip);
         d.manual_ip = None;
         self.become_ready(dev, true);
+        // A strip the user just picked starts with a fresh retry schedule.
+        self.backoff.reset();
         let mut actions = vec![Action::SaveConfig];
         let change = self.pending.take().or(self.cfg.light.power.then(|| LightChange::full(&self.cfg.light)));
         if let Some(change) = change {

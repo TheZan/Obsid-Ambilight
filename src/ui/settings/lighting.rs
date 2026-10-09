@@ -22,6 +22,27 @@ pub struct Edit {
     hex: String,
     touched: Option<Instant>,
     black_warning: bool,
+    /// The HEX field had keyboard focus last frame: never overwrite it then.
+    hex_focused: bool,
+}
+
+/// What confirming the HEX field should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HexCommit {
+    Apply(Rgb),
+    /// Same colour as now: sending it would only switch a dark strip on.
+    Unchanged,
+    Black,
+    Invalid,
+}
+
+pub fn hex_commit(input: &str, current: Rgb) -> HexCommit {
+    match Rgb::from_hex(input.trim()) {
+        None => HexCommit::Invalid,
+        Some(Rgb::BLACK) => HexCommit::Black,
+        Some(c) if c == current => HexCommit::Unchanged,
+        Some(c) => HexCommit::Apply(c),
+    }
 }
 
 fn to_color32(c: Rgb) -> Color32 {
@@ -38,7 +59,9 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, backend: &Backend, 
     if !held {
         edit.color = Some(to_color32(light.color));
         edit.brightness = Some(light.brightness);
-        edit.hex = light.color.to_string();
+        if !edit.hex_focused {
+            edit.hex = light.color.to_string();
+        }
     }
 
     let mut power = light.power;
@@ -61,16 +84,19 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, backend: &Backend, 
     ui.horizontal(|ui| {
         ui.label(s.hex_label);
         let r = ui.add(egui::TextEdit::singleline(&mut edit.hex).desired_width(90.0));
+        edit.hex_focused = r.has_focus();
         if r.changed() {
             edit.touched = Some(Instant::now());
         }
         if r.lost_focus() {
-            if let Some(c) = Rgb::from_hex(edit.hex.trim()) {
-                edit.black_warning = c == Rgb::BLACK;
-                if !edit.black_warning {
+            match hex_commit(&edit.hex, light.color) {
+                HexCommit::Apply(c) => {
+                    edit.black_warning = false;
                     edit.color = Some(to_color32(c));
                     backend.send(Command::SetStatic { color: Some(c), brightness: None });
                 }
+                HexCommit::Black => edit.black_warning = true,
+                HexCommit::Unchanged | HexCommit::Invalid => {}
             }
         }
     });

@@ -67,33 +67,40 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let loaded = config::load(&cfg_path);
-    let _ = diagnostics::init_logging(&log_path, loaded.config.advanced.log_level.as_tracing());
-    info!(version = env!("CARGO_PKG_VERSION"), "starting");
-    let lang = i18n::resolve(loaded.config.app.language, platform::ui_language());
-
     let pipe_name = match pipe::pipe_name() {
         Ok(n) => n,
         Err(e) => {
-            error!(%e, "cannot build pipe name");
+            platform::message_box("Obsid Ambilight", &format!("Cannot start: {e}"));
             return ExitCode::FAILURE;
         }
     };
+    // Take the instance mutex before touching the config or the log: a second
+    // launch must not rotate the running instance's log or move its config aside.
     let _guard = match InstanceGuard::acquire(INSTANCE_MUTEX) {
         Ok(Some(g)) => g,
         Ok(None) => {
-            info!("already running; asking it to open settings");
             let r = pipe::request_with_timeout(&pipe_name, Request::OpenSettings { tab: None }, Duration::from_secs(2));
             if !matches!(r, Ok(Response::Ok)) {
+                // Read-only peek at the language; `config::load` could rename a broken file.
+                let language = std::fs::read_to_string(&cfg_path)
+                    .ok()
+                    .and_then(|t| config::parse(&t).ok())
+                    .map(|l| l.config.app.language)
+                    .unwrap_or_default();
+                let lang = i18n::resolve(language, platform::ui_language());
                 platform::message_box("Obsid Ambilight", i18n::strings(lang).already_running);
             }
             return ExitCode::SUCCESS;
         }
         Err(e) => {
-            error!(%e, "single-instance mutex failed");
+            platform::message_box("Obsid Ambilight", &format!("Cannot start: {e}"));
             return ExitCode::FAILURE;
         }
     };
+
+    let loaded = config::load(&cfg_path);
+    let _ = diagnostics::init_logging(&log_path, loaded.config.advanced.log_level.as_tracing());
+    info!(version = env!("CARGO_PKG_VERSION"), "starting");
 
     // SAFETY: called once before any window is created.
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
@@ -413,11 +420,11 @@ impl TrayApp {
         if self.exiting {
             return;
         }
-        if let Some(child) = &mut self.settings {
-            if matches!(child.try_wait(), Ok(None)) {
-                bring_to_front(child.id());
-                return;
-            }
+        if let Some(child) = &mut self.settings
+            && matches!(child.try_wait(), Ok(None))
+        {
+            bring_to_front(child.id());
+            return;
         }
         let exe = match std::env::current_exe() {
             Ok(p) => p,

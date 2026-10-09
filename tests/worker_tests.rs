@@ -224,3 +224,14 @@ fn notice_round_trips_through_usize() {
     }
     assert_eq!(Notice::from_usize(0), None);
 }
+
+#[test]
+fn a_failed_save_is_reported_in_the_snapshot() {
+    let dir = common::temp_dir("worker-save-fail");
+    let blocker = dir.join("blocker");
+    std::fs::write(&blocker, "a file where a directory is expected").unwrap();
+    let (w, _) = spawn(saved_cfg(), FakeLink::with_strip(), Some(blocker.join("config.toml")));
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    w.send(Command::SetStatic { color: Some(Rgb::new(1, 2, 3)), brightness: None });
+    wait_for(&w, "save error", |s| s.errors.iter().any(|e| e.contains("could not save settings")));
+}
