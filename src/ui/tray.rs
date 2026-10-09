@@ -24,7 +24,7 @@ use crate::app::link::UdpLink;
 use crate::app::state::{Connection, Snapshot, Tab};
 use crate::app::worker::{Notice, Worker, WorkerOptions};
 use crate::i18n::{self, Strings};
-use crate::ipc::{Request, Response, pipe};
+use crate::ipc::{Request, Response, TabRequest, pipe};
 use crate::platform::instance::{INSTANCE_MUTEX, InstanceGuard};
 use crate::platform::{self, paths, wide};
 use crate::ui::icons;
@@ -33,6 +33,8 @@ use crate::{config, diagnostics};
 const WM_APP_TRAY: u32 = WM_APP + 1;
 const WM_APP_NOTICE: u32 = WM_APP + 2;
 const WM_APP_OPEN: u32 = WM_APP + 3;
+/// WM_APP_OPEN wparam meaning "just show the window, keep its tab".
+const NO_TAB: usize = usize::MAX;
 
 const TIMER_MENU: usize = 1;
 const TIMER_EXIT: usize = 2;
@@ -123,12 +125,14 @@ pub fn run() -> ExitCode {
     );
 
     let handle = worker.handle();
+    let tab_request = TabRequest::default();
+    let tabs_for_ipc = tab_request.clone();
     let served = pipe::serve(
         pipe_name,
         Arc::new(move |req| match req {
             Request::GetState => Response::State { snapshot: Box::new(handle.snapshot()) },
             Request::OpenSettings { tab } => {
-                target.post(WM_APP_OPEN, tab.unwrap_or_default().index());
+                target.post(WM_APP_OPEN, tab.map_or(NO_TAB, Tab::index));
                 Response::Ok
             }
             Request::Command { command } if command.allowed_over_ipc() => {
@@ -139,6 +143,7 @@ pub fn run() -> ExitCode {
                 }
             }
             Request::Command { .. } => Response::Error { message: "command not allowed".into() },
+            Request::TakeTab => Response::Tab { tab: tabs_for_ipc.take() },
         }),
     );
     if let Err(e) = served {
@@ -149,6 +154,7 @@ pub fn run() -> ExitCode {
         hwnd,
         worker: Some(worker),
         settings: None,
+        tab_request,
         icon: std::ptr::null_mut(),
         taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
         suppress_next_up: false,
@@ -208,6 +214,8 @@ struct TrayApp {
     hwnd: HWND,
     worker: Option<Worker>,
     settings: Option<Child>,
+    /// Tab for an already open settings window, collected by it over IPC.
+    tab_request: TabRequest,
     icon: HICON,
     taskbar_created: u32,
     suppress_next_up: bool,
@@ -233,7 +241,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
                 WM_LBUTTONDBLCLK => {
                     unsafe { KillTimer(hwnd, TIMER_MENU) };
                     app.suppress_next_up = true;
-                    app.open_settings(Tab::Device);
+                    app.open_settings(None);
                 }
                 WM_RBUTTONUP => app.show_menu(),
                 _ => {}
@@ -243,14 +251,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_APP_NOTICE => {
             match Notice::from_usize(wp) {
                 Some(Notice::Status) => app.refresh_icon(false),
-                Some(Notice::OpenSettings) => app.open_settings(Tab::Device),
+                Some(Notice::OpenSettings) => app.open_settings(Some(Tab::Device)),
                 Some(Notice::Stopped) => app.finish_exit(),
                 None => {}
             }
             0
         }
         WM_APP_OPEN => {
-            app.open_settings(Tab::from_index(wp));
+            app.open_settings((wp != NO_TAB).then(|| Tab::from_index(wp)));
             0
         }
         WM_TIMER => {
@@ -400,9 +408,9 @@ impl TrayApp {
     fn on_menu(&mut self, id: u32, snap: &Snapshot) {
         match id {
             ID_POWER => self.send(Command::SetPower { on: !snap.config.light.power }),
-            ID_CUSTOM => self.open_settings(Tab::Lighting),
+            ID_CUSTOM => self.open_settings(Some(Tab::Lighting)),
             ID_SEARCH => self.send(Command::Discover),
-            ID_SETTINGS => self.open_settings(Tab::Device),
+            ID_SETTINGS => self.open_settings(None),
             ID_EXIT => self.begin_exit(),
             id if (ID_PRESET..ID_PRESET + 100).contains(&id) => {
                 if let Some(c) = snap.config.light.presets.get((id - ID_PRESET) as usize) {
@@ -416,16 +424,23 @@ impl TrayApp {
         }
     }
 
-    fn open_settings(&mut self, tab: Tab) {
+    /// Opens the settings window, or focuses the open one; `tab` switches it.
+    fn open_settings(&mut self, tab: Option<Tab>) {
         if self.exiting {
             return;
         }
         if let Some(child) = &mut self.settings
             && matches!(child.try_wait(), Ok(None))
         {
+            if let Some(tab) = tab {
+                self.tab_request.set(tab);
+            }
             bring_to_front(child.id());
             return;
         }
+        // A new window starts on the requested tab; drop stale requests.
+        self.tab_request.take();
+        let tab = tab.unwrap_or_default();
         let exe = match std::env::current_exe() {
             Ok(p) => p,
             Err(e) => {

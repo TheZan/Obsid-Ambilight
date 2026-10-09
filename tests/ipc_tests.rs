@@ -65,6 +65,7 @@ fn request_response_over_a_real_pipe() {
             Request::GetState => Response::State { snapshot: Box::new(s2.clone()) },
             Request::Command { .. } => Response::Ok,
             Request::OpenSettings { .. } => Response::Error { message: "no".into() },
+            Request::TakeTab => Response::Tab { tab: Some(Tab::Lighting) },
         }),
     )
     .unwrap();
@@ -74,6 +75,7 @@ fn request_response_over_a_real_pipe() {
     assert_eq!(a.request(&Request::GetState).unwrap(), Response::State { snapshot: Box::new(snap) });
     assert_eq!(b.request(&Request::Command { command: Command::Discover }).unwrap(), Response::Ok);
     assert_eq!(a.request(&Request::OpenSettings { tab: None }).unwrap(), Response::Error { message: "no".into() });
+    assert_eq!(b.request(&Request::TakeTab).unwrap(), Response::Tab { tab: Some(Tab::Lighting) });
 }
 
 #[test]
@@ -98,4 +100,20 @@ fn request_with_timeout_gives_up_on_a_silent_server() {
     let r = pipe::request_with_timeout(&name, Request::GetState, Duration::from_millis(500));
     assert!(r.is_err());
     assert!(start.elapsed() < Duration::from_secs(2));
+}
+
+#[test]
+fn tab_requests_round_trip_and_are_taken_once() {
+    use obsid_ambilight::ipc::TabRequest;
+    assert_eq!(decode::<Request>(&encode(&Request::TakeTab)).unwrap(), Request::TakeTab);
+    let resp = Response::Tab { tab: Some(Tab::Lighting) };
+    assert_eq!(decode::<Response>(&encode(&resp)).unwrap(), resp);
+
+    let pending = TabRequest::default();
+    let shared = pending.clone();
+    assert_eq!(pending.take(), None);
+    shared.set(Tab::Device);
+    shared.set(Tab::Lighting);
+    assert_eq!(pending.take(), Some(Tab::Lighting), "latest request wins");
+    assert_eq!(pending.take(), None, "a request is delivered once");
 }

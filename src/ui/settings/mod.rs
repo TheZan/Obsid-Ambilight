@@ -19,7 +19,7 @@ use crate::app::commands::Command;
 use crate::app::state::{Snapshot, Tab};
 use crate::i18n::{self, Strings};
 use crate::ipc::pipe::{self, Client};
-use crate::ipc::{Request, Response};
+use crate::ipc::{Request, Response, TabRequest};
 use crate::platform::{self, paths};
 use crate::ui::icons;
 
@@ -58,6 +58,8 @@ pub fn run(tab: Tab) -> ExitCode {
 pub struct Backend {
     snapshot: Arc<Mutex<Option<Snapshot>>>,
     tx: Sender<Command>,
+    /// Tab the tray asked an already open window to switch to.
+    tab: TabRequest,
 }
 
 impl Backend {
@@ -65,11 +67,13 @@ impl Backend {
         let snapshot = Arc::new(Mutex::new(None));
         let (tx, rx) = mpsc::channel();
         let s = Arc::clone(&snapshot);
+        let tab = TabRequest::default();
+        let t = tab.clone();
         thread::Builder::new()
             .name("settings-ipc".into())
-            .spawn(move || link_loop(&ctx, &s, &rx))
+            .spawn(move || link_loop(&ctx, &s, &t, &rx))
             .expect("spawn settings IPC thread");
-        Self { snapshot, tx }
+        Self { snapshot, tx, tab }
     }
 
     pub fn send(&self, cmd: Command) {
@@ -81,7 +85,7 @@ impl Backend {
     }
 }
 
-fn link_loop(ctx: &egui::Context, snap: &Mutex<Option<Snapshot>>, rx: &Receiver<Command>) {
+fn link_loop(ctx: &egui::Context, snap: &Mutex<Option<Snapshot>>, tab: &TabRequest, rx: &Receiver<Command>) {
     let Ok(name) = pipe::pipe_name() else { return };
     loop {
         let mut client = match Client::connect(&name, Duration::from_millis(500)) {
@@ -110,6 +114,14 @@ fn link_loop(ctx: &egui::Context, snap: &Mutex<Option<Snapshot>>, rx: &Receiver<
                     ctx.request_repaint();
                 }
                 _ => break,
+            }
+            match client.request(&Request::TakeTab) {
+                Ok(Response::Tab { tab: Some(t) }) => {
+                    tab.set(t);
+                    ctx.request_repaint();
+                }
+                Ok(_) => {}
+                Err(_) => break,
             }
         }
     }
@@ -154,6 +166,9 @@ impl SettingsApp {
 impl eframe::App for SettingsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let snap = self.backend.snapshot();
+        if let Some(tab) = self.backend.tab.take() {
+            self.tab = tab;
+        }
         let language = snap.as_ref().map(|s| s.config.app.language).unwrap_or_default();
         let s = i18n::strings(i18n::resolve(language, self.ui_lang));
         if self.title != s.window_title {

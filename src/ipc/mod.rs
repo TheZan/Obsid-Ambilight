@@ -3,6 +3,8 @@
 
 pub mod pipe;
 
+use std::sync::{Arc, Mutex, PoisonError};
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -16,8 +18,14 @@ pub const MAX_MESSAGE: usize = 1 << 20;
 #[serde(tag = "req", rename_all = "snake_case")]
 pub enum Request {
     GetState,
-    OpenSettings { tab: Option<Tab> },
-    Command { command: Command },
+    OpenSettings {
+        tab: Option<Tab>,
+    },
+    Command {
+        command: Command,
+    },
+    /// The settings window asks whether the tray wants it on another tab.
+    TakeTab,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,6 +34,22 @@ pub enum Response {
     Ok,
     State { snapshot: Box<Snapshot> },
     Error { message: String },
+    Tab { tab: Option<Tab> },
+}
+
+/// A tab the tray wants an already open settings window to show. The latest
+/// request wins and is handed out once.
+#[derive(Debug, Clone, Default)]
+pub struct TabRequest(Arc<Mutex<Option<Tab>>>);
+
+impl TabRequest {
+    pub fn set(&self, tab: Tab) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(tab);
+    }
+
+    pub fn take(&self) -> Option<Tab> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
 }
 
 pub fn encode<T: Serialize>(msg: &T) -> String {
