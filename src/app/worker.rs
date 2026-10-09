@@ -21,6 +21,9 @@ use crate::reconnect::Backoff;
 
 pub const MAX_RESTARTS: u32 = 3;
 
+/// How often an open session is re-checked so the UI sees it expire.
+const SESSION_RECHECK: Duration = Duration::from_secs(1);
+
 /// Access to the strip; [`UdpLink`](super::link::UdpLink) in the app, a fake in tests.
 pub trait DeviceLink: Send {
     /// Chameleon2 strips that answered a LAN search.
@@ -236,12 +239,12 @@ impl Ctx {
 
 /// One worker life. Returns normally only on exit or when all senders are gone.
 fn run(ctrl: &mut Controller, link: &mut dyn DeviceLink, rx: &Receiver<Command>, ctx: &Ctx) {
-    let mut state = RunState { save_at: None, last_apply: None, exit: false };
+    let mut state = RunState { save_at: None, last_apply: None, session_check_at: None, exit: false };
     process(ctrl, link, ctx, &mut state, Event::Startup);
 
     while !state.exit {
         let now = Instant::now();
-        let deadline = [ctrl.next_deadline(), state.save_at].into_iter().flatten().min();
+        let deadline = [ctrl.next_deadline(), state.save_at, state.session_check_at].into_iter().flatten().min();
         let wait = deadline.map_or(Duration::from_secs(3600), |d| d.saturating_duration_since(now));
         match rx.recv_timeout(wait) {
             Ok(first) => {
@@ -283,6 +286,8 @@ fn run(ctrl: &mut Controller, link: &mut dyn DeviceLink, rx: &Receiver<Command>,
 struct RunState {
     save_at: Option<Instant>,
     last_apply: Option<Instant>,
+    /// While a session is open, when to re-check it (no network traffic).
+    session_check_at: Option<Instant>,
     exit: bool,
 }
 
@@ -321,6 +326,8 @@ fn process(ctrl: &mut Controller, link: &mut dyn DeviceLink, ctx: &Ctx, st: &mut
         }
         ctx.publish_snapshot(ctrl.snapshot(link.session_open()));
     }
+    // Sessions expire locally without any event; wake up to republish then.
+    st.session_check_at = link.session_open().then(|| Instant::now() + SESSION_RECHECK);
 }
 
 fn save_now(ctrl: &mut Controller, ctx: &Ctx, st: &mut RunState) {

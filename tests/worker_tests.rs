@@ -27,6 +27,8 @@ struct Script {
     devices: Vec<DeviceInfo>,
     fail_handshake: bool,
     panic_on_first_discover: bool,
+    /// Session counts as open until this moment (set by `apply`).
+    session_until: Option<Instant>,
 }
 
 #[derive(Clone, Default)]
@@ -59,7 +61,9 @@ impl DeviceLink for FakeLink {
         if s.fail_handshake { Err("timeout".into()) } else { Ok(Duration::from_millis(12)) }
     }
     fn apply(&mut self, ip: Ipv4Addr, change: LightChange) -> Result<(), String> {
-        self.0.lock().unwrap().calls.push(Call::Apply(ip, change));
+        let mut s = self.0.lock().unwrap();
+        s.calls.push(Call::Apply(ip, change));
+        s.session_until = Some(Instant::now() + Duration::from_millis(300));
         Ok(())
     }
     fn power_off_for_exit(&mut self, ip: Ipv4Addr) -> Result<(), String> {
@@ -67,7 +71,7 @@ impl DeviceLink for FakeLink {
         Ok(())
     }
     fn session_open(&self) -> bool {
-        false
+        self.0.lock().unwrap().session_until.is_some_and(|t| Instant::now() < t)
     }
 }
 
@@ -234,4 +238,14 @@ fn a_failed_save_is_reported_in_the_snapshot() {
     wait_for(&w, "ready", |s| s.connection == Connection::Ready);
     w.send(Command::SetStatic { color: Some(Rgb::new(1, 2, 3)), brightness: None });
     wait_for(&w, "save error", |s| s.errors.iter().any(|e| e.contains("could not save settings")));
+}
+
+#[test]
+fn session_status_clears_on_its_own_after_the_session_expires() {
+    let (w, _) = spawn(saved_cfg(), FakeLink::with_strip(), None);
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    w.send(Command::SetPower { on: true });
+    wait_for(&w, "session open", |s| s.session_open);
+    // No further commands: the worker must notice the expiry by itself.
+    wait_for(&w, "session closed", |s| !s.session_open);
 }
