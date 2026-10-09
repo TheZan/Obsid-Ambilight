@@ -8,7 +8,9 @@
 
 pub mod app;
 pub mod config;
+pub mod diagnostics;
 pub mod discovery;
 pub mod i18n;
+pub mod platform;
 pub mod protocol;
 pub mod reconnect;
