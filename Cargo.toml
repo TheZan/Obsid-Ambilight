@@ -1,0 +1,29 @@
+[package]
+name = "obsid-ambilight"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Lightweight local controller and Ambilight for the Yeelight Obsid (Chameleon2) RGBIC strip"
+publish = false
+
+[lib]
+name = "obsid_ambilight"
+path = "src/lib.rs"
+
+[[bin]]
+name = "obsid-poc"
+path = "src/bin/obsid-poc.rs"
+
+[dependencies]
+serde_json = "1.0.151"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "ansi", "std"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_NetworkManagement_Ndis", "Win32_Networking_WinSock"] }
