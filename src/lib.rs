@@ -11,6 +11,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod discovery;
 pub mod i18n;
+pub mod ipc;
 pub mod platform;
 pub mod protocol;
 pub mod reconnect;
