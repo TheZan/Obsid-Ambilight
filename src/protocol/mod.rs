@@ -103,3 +103,16 @@ impl From<io::Error> for ProtocolError {
 }
 
 pub type Result<T> = std::result::Result<T, ProtocolError>;
+
+impl serde::Serialize for Rgb {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Rgb {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Rgb::from_hex(&s).ok_or_else(|| serde::de::Error::custom(format!("invalid colour {s:?}")))
+    }
+}
