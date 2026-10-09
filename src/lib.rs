@@ -8,5 +8,6 @@
 
 pub mod config;
 pub mod discovery;
+pub mod i18n;
 pub mod protocol;
 pub mod reconnect;
