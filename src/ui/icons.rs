@@ -74,7 +74,7 @@ pub fn render(kind: IconKind, size: u32) -> Vec<u8> {
     let img = match kind {
         IconKind::Lit(c) => {
             let mut img = decode(STATIC[i]).0;
-            for p in img.chunks_exact_mut(4) {
+            for p in img.as_chunks_mut::<4>().0 {
                 retint(p, SCREEN, STATIC_FRAME, c);
             }
             img
@@ -88,7 +88,7 @@ pub fn render(kind: IconKind, size: u32) -> Vec<u8> {
             let dot = amber_dot(i);
             let k = from as f32 / 128.0;
             let (cx, cy, r) = (DOT.0 * k, DOT.1 * k, DOT.2 * k);
-            for (n, (p, d)) in img.chunks_exact_mut(4).zip(dot.chunks_exact(4)).enumerate() {
+            for (n, (p, d)) in img.as_chunks_mut::<4>().0.iter_mut().zip(dot.as_chunks::<4>().0).enumerate() {
                 let (x, y) = ((n as u32 % from) as f32 + 0.5, (n as u32 / from) as f32 + 0.5);
                 if (x - cx).hypot(y - cy) < r {
                     p.copy_from_slice(d);
@@ -108,7 +108,7 @@ pub fn app_icon() -> (Vec<u8>, u32) {
 /// The offline icon with its red dot turned amber.
 fn amber_dot(i: usize) -> Vec<u8> {
     let mut img = decode(OFFLINE[i]).0;
-    for p in img.chunks_exact_mut(4) {
+    for p in img.as_chunks_mut::<4>().0 {
         if p[0] > p[1].saturating_add(60) && p[0] > p[2].saturating_add(60) {
             retint(p, HALO, RED, AMBER);
         }
@@ -140,8 +140,10 @@ fn decode(bytes: &[u8]) -> (Vec<u8>, u32) {
     buf.truncate(info.buffer_size());
     let rgba = match info.color_type {
         png::ColorType::Rgba => buf,
-        png::ColorType::Rgb => buf.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        png::ColorType::GrayscaleAlpha => buf.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Rgb => buf.as_chunks::<3>().0.iter().flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => {
+            buf.as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0], p[1]]).collect()
+        }
         png::ColorType::Grayscale => buf.iter().flat_map(|&v| [v, v, v, 255]).collect(),
         png::ColorType::Indexed => unreachable!("expanded by normalize_to_color8"),
     };

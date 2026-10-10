@@ -184,13 +184,15 @@ impl DxgiGrabber {
             for y in 0..h {
                 let row = std::slice::from_raw_parts(base.add(y * mapped.RowPitch as usize), w * bytes);
                 if self.info.hdr {
-                    pixels.extend(row.chunks_exact(8).map(|p| {
+                    pixels.extend(row.as_chunks::<8>().0.iter().map(|p| {
                         let ch = |i: usize| color::f16_to_f32(u16::from_le_bytes([p[i], p[i + 1]]));
                         color::hdr_to_srgb([ch(0), ch(2), ch(4)], self.info.sdr_white_nits)
                     }));
                 } else {
                     pixels.extend(
-                        row.chunks_exact(4)
+                        row.as_chunks::<4>()
+                            .0
+                            .iter()
                             .map(|p| [f32::from(p[2]) / 255.0, f32::from(p[1]) / 255.0, f32::from(p[0]) / 255.0]),
                     );
                 }

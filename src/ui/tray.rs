@@ -708,7 +708,7 @@ fn dib(bgra: &[u8], size: u32) -> HBITMAP {
 
 /// HICON from RGBA pixels (alpha channel used, monochrome mask unused).
 fn create_icon(rgba: &[u8], size: u32) -> HICON {
-    let bgra: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+    let bgra: Vec<u8> = rgba.as_chunks::<4>().0.iter().flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
     let color = dib(&bgra, size);
     // SAFETY: mask bitmap of the right size; both bitmaps deleted after the
     // icon has copied them.
