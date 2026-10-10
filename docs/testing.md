@@ -63,12 +63,12 @@ still controls the strip. GPU tests: `cargo test --test capture_tests -- --ignor
 
 | # | Scenario | Expected | Result |
 |---|---|---|---|
-| A1 | `obsid-poc --ip <ip> --leds 60 direct --pattern ends`, then `--pattern chase` | Real LED count and where index 0 is | ⏳ |
-| A2 | Settings → Ambilight → «Поиск диода» along the whole strip | One white LED, red behind, green ahead | ⏳ |
-| A3 | Build the two-loop spiral layout (outer and inner loops as segments) | Both loops follow the screen edges | ⏳ |
-| A4 | Tray → «Ambilight» on the desktop, then «Статика» | Stream starts within ~1 s; static colour returns | ⏳ |
-| A5 | Full-screen game (exclusive and borderless) | Colours follow the game | ⏳ |
-| A6 | 21:9 film in a 16:9 player | Bars ignored after ~1 s, colours from the picture | ⏳ |
+| A1 | `obsid-poc --ip <ip> --leds 60 direct --pattern ends`, then `--pattern chase` | Real LED count and where index 0 is | ✅ 2026-10-10 (user): 60 LEDs; index 0 (red) at the power input, 59 (green) at the free end of the inner loop; every 10th white in between; 20.0 FPS, 0 late |
+| A2 | Settings → Ambilight → «Поиск диода» along the whole strip | One white LED, red behind, green ahead | ✅ 2026-10-10 (user): dot and neighbour colours follow the slider. Corners (back view): 0 bottom right, 9 top right, 25 top left, 32 bottom left, 42 bottom before the stand, 47 inner top right, 59 inner top left (inner loop re-laid as a rectangle) |
+| A3 | Build the two-loop spiral layout (outer and inner loops as segments) | Both loops follow the screen edges | ✅ 2026-10-10 (user): 6 segments (0–9, 10–25, 26–32, 33–42 outer; 43–47, 48–59 inner) highlight the right runs. Found: the schematic must show where the strip lies → segments now sample the edge they face; ends join on drag, connectors and labels inside the frame (commits 11ba18d, 8fb43d5) |
+| A4 | Tray → «Ambilight» on the desktop, then «Статика» | Stream starts within ~1 s; static colour returns | ✅ 2026-10-10 (user): starts in ≤ 1 s, colours match the edges, static returns |
+| A5 | Full-screen game (exclusive and borderless) | Colours follow the game | ✅ 2026-10-10 (user): both modes follow the game, almost no pause on switching |
+| A6 | 21:9 film in a 16:9 player (or `docs/letterbox-test.html`, F11) | Bars ignored after ~1 s, colours from the picture | ✅ 2026-10-10 (user): film — top/bottom show the picture, no jumping in dark scenes, Diagnostics ~1 % (thin or non-black bars in that video); test page 2.39:1 — 12 % / 0 %, colours match |
 | A7 | Toggle Windows HDR while Ambilight runs | Short pause, then colours not washed out; Diagnostics shows HDR and SDR white | ⏳ |
 | A8 | UAC prompt / Win+L | Yellow dot, last colours held, capture resumes afterwards | ⏳ |
 | A9 | 20, 25, 30 FPS for 10 min each | Smooth; Diagnostics send FPS ≤ setting; Apple Home OK | ⏳ |

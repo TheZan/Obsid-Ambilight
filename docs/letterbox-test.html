@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Letterbox test 2.39:1</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; cursor: none; }
+  /* 2.39:1 picture centred on a black screen: bars above and below. */
+  #pic {
+    position: absolute; left: 0; right: 0; top: 50%;
+    height: calc(100vw / 2.39); transform: translateY(-50%);
+    background: linear-gradient(90deg, hsl(var(--h) 90% 50%), hsl(calc(var(--h) + 120) 90% 50%), hsl(calc(var(--h) + 240) 90% 50%));
+  }
+  #info { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    font: 600 2vw system-ui; color: #fff; text-shadow: 0 0 8px #000; }
+</style>
+</head>
+<body>
+<div id="pic"></div>
+<div id="info">2.39:1 — нажмите F11 · Esc чтобы выйти</div>
+<script>
+  // Colours drift slowly so the strip has something to follow.
+  let h = 0;
+  setInterval(() => { h = (h + 1) % 360; document.getElementById('pic').style.setProperty('--h', h); }, 50);
+  setTimeout(() => document.getElementById('info').remove(), 4000);
+</script>
+</body>
+</html>
