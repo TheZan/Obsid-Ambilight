@@ -31,11 +31,8 @@ pub fn run(tab: Tab) -> ExitCode {
     if let Ok(logs) = paths::logs_dir() {
         let _ = crate::diagnostics::init_logging(&logs.join("settings.log"), tracing::Level::INFO);
     }
-    let icon = egui::IconData {
-        rgba: icons::render(icons::IconKind::Lit(crate::protocol::Rgb::new(0xF5, 0xD4, 0xA1)), 64),
-        width: 64,
-        height: 64,
-    };
+    let (rgba, size) = icons::app_icon();
+    let icon = egui::IconData { rgba, width: size, height: size };
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Obsid Ambilight")
