@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -123,6 +123,25 @@ pub fn resolve(link: &mut dyn DeviceLink, target: &Target) -> Result<Resolved, S
     }
 }
 
+/// Syncs the Windows Run entry; `autostart::sync` in the app, a fake in tests.
+pub type AutostartFn = Arc<dyn Fn(bool) -> Result<(), String> + Send + Sync>;
+
+/// Commands sent and handled, so a sender can wait for its command.
+#[derive(Default)]
+struct Progress {
+    /// Commands sent; the lock also keeps numbering and queueing in one order.
+    sent: Mutex<u64>,
+    done: Mutex<u64>,
+    cv: Condvar,
+}
+
+impl Progress {
+    fn advance(&self, n: u64) {
+        *self.done.lock().unwrap_or_else(PoisonError::into_inner) += n;
+        self.cv.notify_all();
+    }
+}
+
 type Notify = Arc<dyn Fn(Notice) + Send + Sync>;
 
 /// Cloneable access for other threads (IPC server, tray).
@@ -130,12 +149,30 @@ type Notify = Arc<dyn Fn(Notice) + Send + Sync>;
 pub struct WorkerHandle {
     tx: Sender<Command>,
     shared: Arc<Mutex<Snapshot>>,
+    progress: Arc<Progress>,
 }
 
 impl WorkerHandle {
     /// Queues a command; false if the worker has stopped.
     pub fn send(&self, cmd: Command) -> bool {
-        self.tx.send(cmd).is_ok()
+        self.enqueue(cmd).is_some()
+    }
+
+    /// Queues a command and waits until the worker has handled it, at most
+    /// `timeout`. False on timeout or when the worker has stopped.
+    pub fn send_and_wait(&self, cmd: Command, timeout: Duration) -> bool {
+        let Some(ticket) = self.enqueue(cmd) else { return false };
+        let done = self.progress.done.lock().unwrap_or_else(PoisonError::into_inner);
+        let (done, _) =
+            self.progress.cv.wait_timeout_while(done, timeout, |d| *d < ticket).unwrap_or_else(PoisonError::into_inner);
+        *done >= ticket
+    }
+
+    fn enqueue(&self, cmd: Command) -> Option<u64> {
+        let mut sent = self.progress.sent.lock().unwrap_or_else(PoisonError::into_inner);
+        self.tx.send(cmd).ok()?;
+        *sent += 1;
+        Some(*sent)
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -149,23 +186,27 @@ pub struct Worker {
 }
 
 impl Worker {
+    // Each argument is a separate dependency that tests replace with a fake.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         config: Config,
         warnings: Vec<String>,
         config_path: Option<PathBuf>,
         mut link: Box<dyn DeviceLink>,
         grabbers: GrabberFactory,
+        autostart: AutostartFn,
         notify: Notify,
         options: WorkerOptions,
     ) -> Worker {
         let (tx, rx) = mpsc::channel();
         let first = new_controller(config, warnings);
         let shared = Arc::new(Mutex::new(first.snapshot(false)));
-        let handle = WorkerHandle { tx, shared: Arc::clone(&shared) };
+        let progress = Arc::new(Progress::default());
+        let handle = WorkerHandle { tx, shared: Arc::clone(&shared), progress: Arc::clone(&progress) };
         let thread = thread::Builder::new()
             .name("device-worker".into())
             .spawn(move || {
-                let ctx = Ctx { shared, notify, config_path, options, grabbers };
+                let ctx = Ctx { shared, notify, config_path, options, grabbers, autostart, progress };
                 let mut ctrl = first;
                 let mut restarts = 0;
                 loop {
@@ -237,6 +278,8 @@ struct Ctx {
     config_path: Option<PathBuf>,
     options: WorkerOptions,
     grabbers: GrabberFactory,
+    autostart: AutostartFn,
+    progress: Arc<Progress>,
 }
 
 impl Ctx {
@@ -287,12 +330,14 @@ fn run(ctrl: &mut Controller, link: &mut dyn DeviceLink, rx: &Receiver<Command>,
                     }
                     batch.extend(rx.try_iter());
                 }
+                let handled = batch.len() as u64;
                 for cmd in coalesce(batch) {
                     process(ctrl, link, ctx, &mut state, Event::Command(cmd));
                     if state.exit {
                         break;
                     }
                 }
+                ctx.progress.advance(handled);
             }
             Err(RecvTimeoutError::Timeout) => process(ctrl, link, ctx, &mut state, Event::Tick),
             Err(RecvTimeoutError::Disconnected) => {
@@ -356,7 +401,7 @@ fn process(ctrl: &mut Controller, link: &mut dyn DeviceLink, ctx: &Ctx, st: &mut
                     st.last_apply = Some(Instant::now());
                     queue.push_back(Event::StreamStopped(ip, link.stop_stream(ip, then, false)));
                 }
-                Action::SyncAutostart { .. } => queue.push_back(Event::AutostartSynced(Ok(()))),
+                Action::SyncAutostart { enabled } => queue.push_back(Event::AutostartSynced((ctx.autostart)(enabled))),
                 Action::Test { ip } => queue.push_back(Event::Tested(link.handshake(ip))),
                 Action::SaveConfig => {
                     st.save_at.get_or_insert(Instant::now() + ctx.options.save_delay);

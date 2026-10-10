@@ -22,14 +22,14 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::app::commands::Command;
 use crate::app::link::UdpLink;
 use crate::app::state::{Connection, Snapshot, Tab};
-use crate::app::worker::{Notice, Worker, WorkerOptions};
+use crate::app::worker::{AutostartFn, Notice, Worker, WorkerOptions};
 use crate::capture::dxgi::DxgiGrabber;
 use crate::capture::{Grabber, GrabberFactory};
 use crate::config::Mode;
 use crate::i18n::{self, Strings};
 use crate::ipc::{Request, Response, TabRequest, pipe};
 use crate::platform::instance::{INSTANCE_MUTEX, InstanceGuard};
-use crate::platform::{self, paths, wide};
+use crate::platform::{self, autostart, paths, wide};
 use crate::ui::icons;
 use crate::{config, diagnostics};
 
@@ -122,12 +122,17 @@ pub fn run() -> ExitCode {
     let notify = Arc::new(move |n: Notice| target.post(WM_APP_NOTICE, n as usize));
     let grabbers: GrabberFactory =
         Arc::new(|monitor: &str| DxgiGrabber::open(monitor).map(|g| Box::new(g) as Box<dyn Grabber>));
+    let autostart: AutostartFn = Arc::new(|enabled| {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        autostart::sync(autostart::RUN_KEY, autostart::VALUE_NAME, enabled, &exe).map_err(|e| e.to_string())
+    });
     let worker = Worker::spawn(
         loaded.config,
         loaded.warnings,
         Some(cfg_path),
         Box::new(UdpLink::new()),
         grabbers,
+        autostart,
         notify,
         WorkerOptions::default(),
     );

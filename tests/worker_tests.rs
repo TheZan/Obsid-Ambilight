@@ -9,8 +9,8 @@ use obsid_ambilight::ambilight::image::Image;
 use obsid_ambilight::ambilight::layout::HighlightTarget;
 use obsid_ambilight::app::commands::Command;
 use obsid_ambilight::app::controller::{LightChange, Target};
-use obsid_ambilight::app::state::{Connection, DeviceInfo, Snapshot};
-use obsid_ambilight::app::worker::{DeviceLink, Notice, Worker, WorkerOptions, resolve};
+use obsid_ambilight::app::state::{Connection, Dark, DeviceInfo, Snapshot};
+use obsid_ambilight::app::worker::{AutostartFn, DeviceLink, Notice, Worker, WorkerOptions, resolve};
 use obsid_ambilight::capture::{Grabber, GrabberFactory, GrabberInfo};
 use obsid_ambilight::config::{self, Config, ExitAction, Mode};
 use obsid_ambilight::protocol::Rgb;
@@ -39,6 +39,8 @@ struct Script {
     /// Session counts as open until this moment (set by `apply`).
     session_until: Option<Instant>,
     streaming: bool,
+    /// Delay inside `apply` (a busy worker).
+    apply_delay: Duration,
 }
 
 #[derive(Clone, Default)]
@@ -80,6 +82,8 @@ impl DeviceLink for FakeLink {
         if s.fail_handshake { Err("timeout".into()) } else { Ok(Duration::from_millis(12)) }
     }
     fn apply(&mut self, ip: Ipv4Addr, change: LightChange) -> Result<(), String> {
+        let delay = self.0.lock().unwrap().apply_delay;
+        std::thread::sleep(delay);
         let mut s = self.0.lock().unwrap();
         s.calls.push(Call::Apply(ip, change));
         s.session_until = Some(Instant::now() + Duration::from_millis(300));
@@ -180,6 +184,16 @@ fn spawn_with(
     path: Option<std::path::PathBuf>,
     grabbers: GrabberFactory,
 ) -> (Worker, Arc<Mutex<Vec<Notice>>>) {
+    spawn_full(cfg, link, path, grabbers, Arc::new(|_| Ok(())))
+}
+
+fn spawn_full(
+    cfg: Config,
+    link: FakeLink,
+    path: Option<std::path::PathBuf>,
+    grabbers: GrabberFactory,
+    autostart: AutostartFn,
+) -> (Worker, Arc<Mutex<Vec<Notice>>>) {
     let notices = Arc::new(Mutex::new(Vec::new()));
     let n = Arc::clone(&notices);
     let w = Worker::spawn(
@@ -188,6 +202,7 @@ fn spawn_with(
         path,
         Box::new(link),
         grabbers,
+        autostart,
         Arc::new(move |x: Notice| n.lock().unwrap().push(x)),
         fast(),
     );
@@ -451,4 +466,83 @@ fn exit_during_ambilight_leaves_direct_mode_with_the_static_colour() {
     let full = LightChange::full(&Config::default().light);
     assert!(link.calls().contains(&Call::StopStream(IP, full, true)), "{:?}", link.calls());
     assert_eq!(alive.load(Ordering::SeqCst), 0);
+}
+
+// ---------- Windows lifecycle ----------
+
+#[test]
+fn startup_syncs_autostart_with_the_setting() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s = Arc::clone(&seen);
+    let mut cfg = saved_cfg();
+    cfg.startup.autostart = false;
+    let (w, _) = spawn_full(
+        cfg,
+        FakeLink::with_strip(),
+        None,
+        red_screen().0,
+        Arc::new(move |on| {
+            s.lock().unwrap().push(on);
+            Ok(())
+        }),
+    );
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    assert_eq!(*seen.lock().unwrap(), vec![false]);
+    w.send(Command::SetAutostart { enabled: true });
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while seen.lock().unwrap().len() < 2 {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*seen.lock().unwrap(), vec![false, true]);
+}
+
+#[test]
+fn a_failing_autostart_is_reported_in_the_snapshot() {
+    let (w, _) = spawn_full(
+        saved_cfg(),
+        FakeLink::with_strip(),
+        None,
+        red_screen().0,
+        Arc::new(|_| Err("access denied".into())),
+    );
+    wait_for(&w, "autostart error", |s| s.errors.iter().any(|e| e.contains("autostart")));
+    wait_for(&w, "still connects", |s| s.connection == Connection::Ready);
+}
+
+#[test]
+fn send_and_wait_returns_once_the_command_is_handled() {
+    let link = FakeLink::with_strip();
+    let (w, _) = spawn(saved_cfg(), link.clone(), None);
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    assert!(w.handle().send_and_wait(Command::Darken { reason: Dark::Sleep }, Duration::from_secs(2)));
+    assert!(link.calls().contains(&Call::Apply(IP, LightChange::off())), "{:?}", link.calls());
+}
+
+#[test]
+fn send_and_wait_gives_up_on_a_busy_worker() {
+    let link = FakeLink::with_strip();
+    let (w, _) = spawn(saved_cfg(), link.clone(), None);
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    std::thread::sleep(Duration::from_millis(250));
+    link.0.lock().unwrap().apply_delay = Duration::from_millis(600);
+    let h = w.handle();
+    assert!(!h.send_and_wait(Command::SetPower { on: false }, Duration::from_millis(100)));
+    assert!(
+        h.send_and_wait(Command::SetPower { on: true }, Duration::from_secs(3)),
+        "later commands are still awaited"
+    );
+}
+
+#[test]
+fn locking_in_ambilight_stops_capture_and_unlocking_restarts_it() {
+    let link = FakeLink::with_strip();
+    let (grabbers, alive) = red_screen();
+    let (w, _) = spawn_with(ambilight_cfg(), link.clone(), None, grabbers);
+    wait_calls(&link, "first frame", |c| c.iter().any(|x| matches!(x, Call::Frame(_))));
+    assert!(w.handle().send_and_wait(Command::Darken { reason: Dark::Locked }, Duration::from_secs(2)));
+    assert!(link.calls().contains(&Call::StopStream(IP, LightChange::off(), false)));
+    assert_eq!(alive.load(Ordering::SeqCst), 0);
+    w.send(Command::Undarken { reason: Dark::Locked });
+    wait_calls(&link, "second start", |c| c.iter().filter(|x| matches!(x, Call::StartStream(..))).count() == 2);
 }
