@@ -310,3 +310,17 @@ fn ambilight_check_reports_out_of_range_settings() {
         assert!(bad.check().is_err(), "{bad:?}");
     }
 }
+
+#[test]
+fn autostart_defaults_to_on_and_round_trips() {
+    assert!(config::parse(SPEC_EXAMPLE).unwrap().config.startup.autostart, "stage 1/2 files turn it on");
+    let l = config::parse("[startup]\nautostart = false\n").unwrap();
+    assert!(!l.config.startup.autostart);
+    assert!(l.warnings.is_empty());
+    let dir = common::temp_dir("autostart");
+    let path = dir.join("config.toml");
+    let mut c = Config::default();
+    c.startup.autostart = false;
+    config::save(&path, &c).unwrap();
+    assert_eq!(config::load(&path).config, c);
+}

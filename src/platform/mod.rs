@@ -1,5 +1,6 @@
 //! Thin Windows helpers shared by the tray and the settings window.
 
+pub mod autostart;
 pub mod instance;
 pub mod paths;
 

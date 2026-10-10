@@ -186,6 +186,8 @@ pub struct LightConfig {
 pub struct StartupConfig {
     /// Turn the strip on with the static colour when the app starts.
     pub power_on: bool,
+    /// Keep the `HKCU\…\Run` entry so the app starts with Windows.
+    pub autostart: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -225,7 +227,7 @@ impl Default for Config {
                 brightness: 40,
                 presets: default_presets(),
             },
-            startup: StartupConfig { power_on: true },
+            startup: StartupConfig { power_on: true, autostart: true },
             app: AppConfig { language: Language::Auto, exit_action: ExitAction::Keep, mode: Mode::Static },
             advanced: AdvancedConfig { log_level: LogLevel::Info },
             ambilight: AmbilightConfig::defaults(60),
@@ -272,7 +274,10 @@ pub fn parse(text: &str) -> Result<Loaded, String> {
                 .field("static", "brightness", d.light.brightness, |v| as_u8(v).filter(|b| (1..=100).contains(b))),
             presets: r.presets(d.light.presets),
         },
-        startup: StartupConfig { power_on: r.field("startup", "power_on", d.startup.power_on, Value::as_bool) },
+        startup: StartupConfig {
+            power_on: r.field("startup", "power_on", d.startup.power_on, Value::as_bool),
+            autostart: r.field("startup", "autostart", d.startup.autostart, Value::as_bool),
+        },
         app: AppConfig {
             language: r.field("app", "language", d.app.language, choice),
             exit_action: r.field("app", "exit_action", d.app.exit_action, choice),
