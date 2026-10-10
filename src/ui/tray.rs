@@ -311,6 +311,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             unsafe { PostQuitMessage(0) };
             0
         }
+        // The installer closes a running copy this way; exit like the menu item.
+        WM_CLOSE => {
+            app.begin_exit();
+            0
+        }
         WM_QUERYENDSESSION => 1,
         WM_WTSSESSION_CHANGE | WM_POWERBROADCAST | WM_ENDSESSION => {
             let display = if msg == WM_POWERBROADCAST && wp as u32 == PBT_POWERSETTINGCHANGE {
