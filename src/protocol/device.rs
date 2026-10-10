@@ -59,6 +59,15 @@ impl<T: Transport> Chameleon2<T> {
         self.led_count
     }
 
+    /// Changes the frame length expected by `send_frame` (the LED count setting changed).
+    pub fn set_led_count(&mut self, led_count: usize) -> Result<()> {
+        if !(1..=MAX_LEDS).contains(&led_count) {
+            return Err(ProtocolError::InvalidInput(format!("LED count {led_count} not in 1..={MAX_LEDS}")));
+        }
+        self.led_count = led_count;
+        Ok(())
+    }
+
     pub fn is_direct(&self) -> bool {
         self.direct
     }
@@ -126,6 +135,15 @@ impl<T: Transport> Chameleon2<T> {
         self.session.request(&Call::activate_fx_mode("direct"))?;
         self.direct = true;
         info!("direct mode active");
+        Ok(())
+    }
+
+    /// `deactivate_fx_mode direct`; the static state is applied separately.
+    pub fn leave_direct(&mut self) -> Result<()> {
+        self.ensure_session()?;
+        self.session.request(&Call::deactivate_fx_mode("direct"))?;
+        self.direct = false;
+        info!("direct mode left");
         Ok(())
     }
 

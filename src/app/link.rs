@@ -12,7 +12,7 @@ use crate::protocol::device::Chameleon2;
 use crate::protocol::packets::MAX_LEDS;
 use crate::protocol::session::SessionConfig;
 use crate::protocol::transport::UdpTransport;
-use crate::protocol::{self, ProtocolError};
+use crate::protocol::{self, ProtocolError, Rgb};
 
 /// A session unused for this long is assumed expired on the device
 /// (it announces a 10 s keep-alive interval) and is replaced.
@@ -65,6 +65,10 @@ fn text(e: ProtocolError) -> String {
     e.to_string()
 }
 
+fn quick_config() -> SessionConfig {
+    SessionConfig { reply_timeout: Duration::from_millis(400), handshake_attempts: 1, ..SessionConfig::default() }
+}
+
 impl DeviceLink for UdpLink {
     fn discover(&mut self) -> Result<Vec<DeviceInfo>, String> {
         let found = discovery::discover(&DiscoveryOptions::default()).map_err(|e| e.to_string())?;
@@ -91,17 +95,54 @@ impl DeviceLink for UdpLink {
     }
 
     fn power_off_for_exit(&mut self, ip: Ipv4Addr) -> Result<(), String> {
-        let quick = SessionConfig {
-            reply_timeout: Duration::from_millis(400),
-            handshake_attempts: 1,
-            ..SessionConfig::default()
-        };
+        let quick = quick_config();
         let reusable = matches!(&self.current, Some((cur, dev, used)) if *cur == ip && dev.session().is_open() && used.elapsed() < SESSION_IDLE);
         if !reusable {
             self.current = Some((ip, Self::connect(ip, quick).map_err(text)?, Instant::now()));
         }
         let (_, dev, _) = self.current.as_mut().expect("session just ensured");
         dev.set_power(false).map_err(text)
+    }
+
+    fn start_stream(&mut self, ip: Ipv4Addr, led_count: usize) -> Result<(), String> {
+        self.current = None;
+        let mut dev = Chameleon2::connect(ip, led_count, SessionConfig::default()).map_err(text)?;
+        // Hardware brightness stays at 100; Ambilight brightness is applied to the frames.
+        dev.set_power(true).and_then(|()| dev.set_brightness(100)).and_then(|()| dev.enter_direct()).map_err(text)?;
+        self.current = Some((ip, dev, Instant::now()));
+        Ok(())
+    }
+
+    fn send_frame(&mut self, colors: &[Rgb]) -> Result<(), String> {
+        let Some((_, dev, used)) = self.current.as_mut() else { return Err("no stream is running".into()) };
+        if dev.led_count() != colors.len() {
+            dev.set_led_count(colors.len()).map_err(text)?;
+        }
+        dev.send_frame(colors).map_err(text)?;
+        *used = Instant::now();
+        Ok(())
+    }
+
+    fn stream_tick(&mut self) -> Result<(), String> {
+        let Some((_, dev, _)) = self.current.as_mut() else { return Err("no stream is running".into()) };
+        // A single unanswered keep-alive is tolerated; the session decides when it is lost.
+        if let Err(e) = dev.tick(Instant::now())
+            && !dev.session().is_open()
+        {
+            return Err(text(e));
+        }
+        if dev.is_direct() { Ok(()) } else { Err("direct mode was lost".into()) }
+    }
+
+    fn stop_stream(&mut self, ip: Ipv4Addr, then: LightChange, quick: bool) -> Result<(), String> {
+        let reusable = matches!(&self.current, Some((cur, dev, _)) if *cur == ip && dev.session().is_open());
+        if !reusable {
+            let cfg = if quick { quick_config() } else { SessionConfig::default() };
+            self.current = Some((ip, Self::connect(ip, cfg).map_err(text)?, Instant::now()));
+        }
+        let (_, dev, used) = self.current.as_mut().expect("session just ensured");
+        *used = Instant::now();
+        dev.leave_direct().and_then(|()| send(dev, then)).map_err(text)
     }
 
     fn session_open(&self) -> bool {

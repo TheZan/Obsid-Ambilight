@@ -1,14 +1,18 @@
 mod common;
 
 use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use obsid_ambilight::ambilight::image::Image;
+use obsid_ambilight::ambilight::layout::HighlightTarget;
 use obsid_ambilight::app::commands::Command;
 use obsid_ambilight::app::controller::{LightChange, Target};
 use obsid_ambilight::app::state::{Connection, DeviceInfo, Snapshot};
 use obsid_ambilight::app::worker::{DeviceLink, Notice, Worker, WorkerOptions, resolve};
-use obsid_ambilight::config::{self, Config, ExitAction};
+use obsid_ambilight::capture::{Grabber, GrabberFactory, GrabberInfo};
+use obsid_ambilight::config::{self, Config, ExitAction, Mode};
 use obsid_ambilight::protocol::Rgb;
 
 const IP: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 85);
@@ -19,6 +23,9 @@ enum Call {
     Handshake(Ipv4Addr),
     Apply(Ipv4Addr, LightChange),
     ExitOff(Ipv4Addr),
+    StartStream(Ipv4Addr, usize),
+    Frame(Vec<Rgb>),
+    StopStream(Ipv4Addr, LightChange, bool),
 }
 
 #[derive(Default)]
@@ -27,8 +34,11 @@ struct Script {
     devices: Vec<DeviceInfo>,
     fail_handshake: bool,
     panic_on_first_discover: bool,
+    /// The next `stream_tick` reports a lost session.
+    fail_next_tick: bool,
     /// Session counts as open until this moment (set by `apply`).
     session_until: Option<Instant>,
+    streaming: bool,
 }
 
 #[derive(Clone, Default)]
@@ -42,6 +52,15 @@ impl FakeLink {
     }
     fn calls(&self) -> Vec<Call> {
         self.0.lock().unwrap().calls.clone()
+    }
+    fn frames(&self) -> Vec<Vec<Rgb>> {
+        self.calls()
+            .into_iter()
+            .filter_map(|c| match c {
+                Call::Frame(f) => Some(f),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -70,9 +89,70 @@ impl DeviceLink for FakeLink {
         self.0.lock().unwrap().calls.push(Call::ExitOff(ip));
         Ok(())
     }
-    fn session_open(&self) -> bool {
-        self.0.lock().unwrap().session_until.is_some_and(|t| Instant::now() < t)
+    fn start_stream(&mut self, ip: Ipv4Addr, led_count: usize) -> Result<(), String> {
+        let mut s = self.0.lock().unwrap();
+        s.calls.push(Call::StartStream(ip, led_count));
+        s.streaming = true;
+        Ok(())
     }
+    fn send_frame(&mut self, colors: &[Rgb]) -> Result<(), String> {
+        let mut s = self.0.lock().unwrap();
+        assert!(s.streaming, "frame sent outside a stream");
+        s.calls.push(Call::Frame(colors.to_vec()));
+        Ok(())
+    }
+    fn stream_tick(&mut self) -> Result<(), String> {
+        let mut s = self.0.lock().unwrap();
+        if std::mem::take(&mut s.fail_next_tick) {
+            s.streaming = false;
+            return Err("keep-alive lost".into());
+        }
+        Ok(())
+    }
+    fn stop_stream(&mut self, ip: Ipv4Addr, then: LightChange, quick: bool) -> Result<(), String> {
+        let mut s = self.0.lock().unwrap();
+        s.calls.push(Call::StopStream(ip, then, quick));
+        s.streaming = false;
+        Ok(())
+    }
+    fn session_open(&self) -> bool {
+        let s = self.0.lock().unwrap();
+        s.streaming || s.session_until.is_some_and(|t| Instant::now() < t)
+    }
+}
+
+/// Grabber that always shows one solid colour.
+struct SolidGrabber {
+    info: GrabberInfo,
+    color: [f32; 3],
+    alive: Arc<AtomicUsize>,
+}
+
+impl Grabber for SolidGrabber {
+    fn info(&self) -> &GrabberInfo {
+        &self.info
+    }
+    fn grab(&mut self) -> Result<Option<Image>, String> {
+        Ok(Some(Image::filled(32, 18, self.color)))
+    }
+}
+
+impl Drop for SolidGrabber {
+    fn drop(&mut self) {
+        self.alive.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Factory of red-screen grabbers; the counter tracks live grabbers.
+fn red_screen() -> (GrabberFactory, Arc<AtomicUsize>) {
+    let alive = Arc::new(AtomicUsize::new(0));
+    let a = Arc::clone(&alive);
+    let f: GrabberFactory = Arc::new(move |_: &str| {
+        a.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(SolidGrabber { info: GrabberInfo::default(), color: [1.0, 0.0, 0.0], alive: Arc::clone(&a) })
+            as Box<dyn Grabber>)
+    });
+    (f, alive)
 }
 
 fn dev(id: &str, ip: Ipv4Addr) -> DeviceInfo {
@@ -91,6 +171,15 @@ fn fast() -> WorkerOptions {
 }
 
 fn spawn(cfg: Config, link: FakeLink, path: Option<std::path::PathBuf>) -> (Worker, Arc<Mutex<Vec<Notice>>>) {
+    spawn_with(cfg, link, path, red_screen().0)
+}
+
+fn spawn_with(
+    cfg: Config,
+    link: FakeLink,
+    path: Option<std::path::PathBuf>,
+    grabbers: GrabberFactory,
+) -> (Worker, Arc<Mutex<Vec<Notice>>>) {
     let notices = Arc::new(Mutex::new(Vec::new()));
     let n = Arc::clone(&notices);
     let w = Worker::spawn(
@@ -98,10 +187,30 @@ fn spawn(cfg: Config, link: FakeLink, path: Option<std::path::PathBuf>) -> (Work
         Vec::new(),
         path,
         Box::new(link),
+        grabbers,
         Arc::new(move |x: Notice| n.lock().unwrap().push(x)),
         fast(),
     );
     (w, notices)
+}
+
+fn ambilight_cfg() -> Config {
+    let mut c = saved_cfg();
+    c.app.mode = Mode::Ambilight;
+    c.ambilight.smoothing = 0;
+    c
+}
+
+fn wait_calls(link: &FakeLink, what: &str, pred: impl Fn(&[Call]) -> bool) -> Vec<Call> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let calls = link.calls();
+        if pred(&calls) {
+            return calls;
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {what}: {calls:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn wait_for(w: &Worker, what: &str, pred: impl Fn(&Snapshot) -> bool) -> Snapshot {
@@ -248,4 +357,98 @@ fn session_status_clears_on_its_own_after_the_session_expires() {
     wait_for(&w, "session open", |s| s.session_open);
     // No further commands: the worker must notice the expiry by itself.
     wait_for(&w, "session closed", |s| !s.session_open);
+}
+
+// ---------- streaming ----------
+
+#[test]
+fn ambilight_streams_captured_frames() {
+    let link = FakeLink::with_strip();
+    let (w, _) = spawn(ambilight_cfg(), link.clone(), None);
+    wait_calls(&link, "stream start", |c| c.contains(&Call::StartStream(IP, 60)));
+    wait_calls(&link, "red frame", |c| c.contains(&Call::Frame(vec![Rgb::new(255, 0, 0); 60])));
+    let s = wait_for(&w, "capture status", |s| s.stream.capture.as_ref().is_some_and(|c| c.active));
+    assert!(s.stream.streaming);
+}
+
+#[test]
+fn an_unchanged_screen_is_resent_once_per_second() {
+    let link = FakeLink::with_strip();
+    let (_w, _) = spawn(ambilight_cfg(), link.clone(), None);
+    wait_calls(&link, "first frame", |c| c.iter().any(|x| matches!(x, Call::Frame(_))));
+    let before = link.frames().len();
+    std::thread::sleep(Duration::from_millis(2200));
+    let sent = link.frames().len() - before;
+    assert!((1..=3).contains(&sent), "{sent} frames for a still screen in 2.2 s");
+}
+
+#[test]
+fn switching_to_static_stops_capture_and_the_stream() {
+    let link = FakeLink::with_strip();
+    let (grabbers, alive) = red_screen();
+    let (w, _) = spawn_with(ambilight_cfg(), link.clone(), None, grabbers);
+    wait_calls(&link, "first frame", |c| c.iter().any(|x| matches!(x, Call::Frame(_))));
+    assert_eq!(alive.load(Ordering::SeqCst), 1);
+    w.send(Command::SetMode { mode: Mode::Static });
+    let full = LightChange::full(&Config::default().light);
+    wait_calls(&link, "stop", |c| c.contains(&Call::StopStream(IP, full, false)));
+    wait_for(&w, "capture stopped", |s| s.stream.capture.is_none() && !s.stream.streaming);
+    assert_eq!(alive.load(Ordering::SeqCst), 0, "the grabber is released");
+    let frames = link.frames().len();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(link.frames().len(), frames, "no frames after the stop");
+}
+
+#[test]
+fn stream_failure_goes_offline_and_resumes() {
+    let link = FakeLink::with_strip();
+    let (w, _) = spawn(ambilight_cfg(), link.clone(), None);
+    wait_calls(&link, "first frame", |c| c.iter().any(|x| matches!(x, Call::Frame(_))));
+    link.0.lock().unwrap().fail_next_tick = true;
+    wait_for(&w, "offline", |s| s.connection == Connection::Offline && s.stream.capture.is_none());
+    wait_calls(&link, "second start", |c| c.iter().filter(|x| matches!(x, Call::StartStream(..))).count() == 2);
+    wait_for(&w, "streaming again", |s| s.connection == Connection::Ready && s.stream.streaming);
+}
+
+#[test]
+fn highlight_from_static_sends_markers_then_returns_to_static() {
+    let link = FakeLink::with_strip();
+    let (grabbers, alive) = red_screen();
+    let (w, _) = spawn_with(saved_cfg(), link.clone(), None, grabbers);
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    w.send(Command::Highlight { target: HighlightTarget::Led(5) });
+    let calls = wait_calls(&link, "marker frame", |c| c.iter().any(|x| matches!(x, Call::Frame(_))));
+    assert!(calls.contains(&Call::StartStream(IP, 60)));
+    let marker = link.frames()[0].clone();
+    assert_eq!(marker[5], Rgb::new(255, 255, 255));
+    assert_eq!(alive.load(Ordering::SeqCst), 0, "no capture for a highlight in static mode");
+    // Nobody renews the highlight (the window was closed): back to static after 3 s.
+    let full = LightChange::full(&Config::default().light);
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while !link.calls().contains(&Call::StopStream(IP, full, false)) {
+        assert!(Instant::now() < deadline, "{:?}", link.calls());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn led_count_change_while_streaming_resizes_frames() {
+    let link = FakeLink::with_strip();
+    let (w, _) = spawn(ambilight_cfg(), link.clone(), None);
+    wait_calls(&link, "first frame", |c| c.iter().any(|x| matches!(x, Call::Frame(f) if f.len() == 60)));
+    w.send(Command::SetLedCount { count: 40 });
+    wait_calls(&link, "40-LED frame", |c| c.iter().any(|x| matches!(x, Call::Frame(f) if f.len() == 40)));
+}
+
+#[test]
+fn exit_during_ambilight_leaves_direct_mode_with_the_static_colour() {
+    let link = FakeLink::with_strip();
+    let (grabbers, alive) = red_screen();
+    let (w, _) = spawn_with(ambilight_cfg(), link.clone(), None, grabbers);
+    wait_calls(&link, "first frame", |c| c.iter().any(|x| matches!(x, Call::Frame(_))));
+    assert!(w.send(Command::Exit));
+    assert!(w.join(Duration::from_secs(3)), "worker did not stop");
+    let full = LightChange::full(&Config::default().light);
+    assert!(link.calls().contains(&Call::StopStream(IP, full, true)), "{:?}", link.calls());
+    assert_eq!(alive.load(Ordering::SeqCst), 0);
 }

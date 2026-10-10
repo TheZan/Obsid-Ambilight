@@ -395,3 +395,16 @@ fn udp_transport_times_out_without_device() {
     assert!(matches!(s.open(), Err(ProtocolError::Timeout)));
     assert!(start.elapsed() < Duration::from_secs(2));
 }
+
+#[test]
+fn led_count_can_change_in_direct_mode_and_direct_mode_can_be_left() {
+    let mut d = device(4);
+    d.enter_direct().unwrap();
+    assert!(d.set_led_count(0).is_err());
+    assert!(d.set_led_count(MAX_LEDS + 1).is_err());
+    d.set_led_count(6).unwrap();
+    d.send_frame(&[Rgb::new(1, 1, 1); 6]).unwrap();
+    d.leave_direct().unwrap();
+    assert!(!d.is_direct());
+    assert_eq!(sent_methods(d.session()).last().unwrap(), "deactivate_fx_mode");
+}

@@ -23,6 +23,8 @@ use crate::app::commands::Command;
 use crate::app::link::UdpLink;
 use crate::app::state::{Connection, Snapshot, Tab};
 use crate::app::worker::{Notice, Worker, WorkerOptions};
+use crate::capture::dxgi::DxgiGrabber;
+use crate::capture::{Grabber, GrabberFactory};
 use crate::i18n::{self, Strings};
 use crate::ipc::{Request, Response, TabRequest, pipe};
 use crate::platform::instance::{INSTANCE_MUTEX, InstanceGuard};
@@ -115,11 +117,14 @@ pub fn run() -> ExitCode {
     };
     let target = SendHwnd(hwnd);
     let notify = Arc::new(move |n: Notice| target.post(WM_APP_NOTICE, n as usize));
+    let grabbers: GrabberFactory =
+        Arc::new(|monitor: &str| DxgiGrabber::open(monitor).map(|g| Box::new(g) as Box<dyn Grabber>));
     let worker = Worker::spawn(
         loaded.config,
         loaded.warnings,
         Some(cfg_path),
         Box::new(UdpLink::new()),
+        grabbers,
         notify,
         WorkerOptions::default(),
     );
