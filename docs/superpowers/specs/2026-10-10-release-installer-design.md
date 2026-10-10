@@ -51,7 +51,8 @@
 
 ### 3.1. Закрытие запущенного приложения
 
-При установке (`PrepareToInstall`) и удалении (`InitializeUninstall`):
+При установке (`PrepareToInstall`) и после подтверждения удаления
+(`CurUninstallStepChanged(usUninstall)`; отмена удаления приложение не трогает):
 
 1. Найти окно класса `ObsidAmbilightTray`; если есть — `PostMessage(WM_CLOSE)`.
 2. Ждать до 10 с, пока не исчезнет мьютекс `Local\ObsidAmbilight.Instance`

@@ -101,16 +101,12 @@ begin
   Result := '';
 end;
 
-function InitializeUninstall(): Boolean;
-begin
-  CloseRunningApp;
-  Result := True;
-end;
-
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep = usUninstall then
   begin
+    { Only now, after the user confirmed: a cancelled uninstall keeps the app. }
+    CloseRunningApp;
     RegDeleteValue(HKCU, RunKey, RunValue);
     RegDeleteValue(HKCU, ApprovedKey, RunValue);
   end;
