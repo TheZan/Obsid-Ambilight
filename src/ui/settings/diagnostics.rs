@@ -7,8 +7,19 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::app::state::Snapshot;
-use crate::i18n::Strings;
+use crate::config::Mode;
+use crate::i18n::{self, Strings};
 use crate::platform::{self, paths};
+
+pub fn mode_text(s: &Strings, snap: &Snapshot) -> &'static str {
+    if !snap.config.light.power {
+        s.mode_off
+    } else if snap.config.app.mode == Mode::Ambilight {
+        s.mode_ambilight
+    } else {
+        s.mode_static
+    }
+}
 
 pub fn summary(snap: &Snapshot) -> String {
     let mut t = String::new();
@@ -24,6 +35,31 @@ pub fn summary(snap: &Snapshot) -> String {
     }
     let _ = writeln!(t, "session open: {}", snap.session_open);
     let _ = writeln!(t, "manual ip: {:?}", snap.config.device.manual_ip);
+    let _ = writeln!(t, "mode: {:?} (power {})", snap.config.app.mode, snap.config.light.power);
+    let st = &snap.stream;
+    let _ = writeln!(t, "stream: {} (highlight {}, sent {:.1} fps)", st.streaming, st.highlight, st.send_fps);
+    match &st.capture {
+        Some(c) => {
+            let _ = writeln!(
+                t,
+                "capture: {} on {} {}x{} hdr {} white {:.0} nits, {:.1} fps, bars {:.2}/{:.2}, active {}, error {:?}",
+                c.monitor,
+                c.adapter,
+                c.width,
+                c.height,
+                c.hdr,
+                c.sdr_white_nits,
+                c.fps,
+                c.bars[0],
+                c.bars[1],
+                c.active,
+                c.error
+            );
+        }
+        None => {
+            let _ = writeln!(t, "capture: not running");
+        }
+    }
     let _ = writeln!(t, "errors:");
     for e in &snap.errors {
         let _ = writeln!(t, "  {e}");
@@ -49,6 +85,47 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, copied_at: &mut Opt
         ui.label(s.session_label);
         ui.label(if snap.session_open { s.session_open } else { s.session_closed });
         ui.end_row();
+        ui.label(s.mode_label);
+        ui.label(mode_text(s, snap));
+        ui.end_row();
+        ui.label(s.capture_label);
+        match &snap.stream.capture {
+            Some(c) => {
+                ui.label(format!("{} · {}×{} · {}", c.monitor, c.width, c.height, c.adapter));
+                ui.end_row();
+                ui.label(s.hdr_label);
+                ui.label(if c.hdr {
+                    i18n::fill(s.hdr_on, &[&format!("{:.0}", c.sdr_white_nits)])
+                } else {
+                    s.hdr_off.to_owned()
+                });
+                ui.end_row();
+                ui.label(s.capture_fps);
+                ui.label(format!("{:.1}", c.fps));
+                ui.end_row();
+                ui.label(s.bars_label);
+                ui.label(if c.bars == [0.0, 0.0] {
+                    s.bars_none.to_owned()
+                } else {
+                    format!("{:.0} % / {:.0} %", c.bars[0] * 100.0, c.bars[1] * 100.0)
+                });
+                ui.end_row();
+                if let Some(e) = &c.error {
+                    ui.label(s.capture_error);
+                    ui.colored_label(ui.visuals().warn_fg_color, e);
+                    ui.end_row();
+                }
+            }
+            None => {
+                ui.label(s.capture_not_running);
+                ui.end_row();
+            }
+        }
+        if snap.stream.streaming {
+            ui.label(s.send_fps);
+            ui.label(format!("{:.1}", snap.stream.send_fps));
+            ui.end_row();
+        }
     });
 
     ui.add_space(8.0);

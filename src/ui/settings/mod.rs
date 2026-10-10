@@ -1,6 +1,7 @@
 //! Settings window: a separate process (`--settings`) that talks to the
 //! background process over the pipe and exits when the window closes.
 
+pub mod ambilight;
 pub mod device;
 pub mod diagnostics;
 pub mod general;
@@ -37,7 +38,7 @@ pub fn run(tab: Tab) -> ExitCode {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Obsid Ambilight")
-            .with_inner_size([680.0, 480.0])
+            .with_inner_size([900.0, 600.0])
             .with_min_inner_size([560.0, 400.0])
             .with_icon(icon),
         ..Default::default()
@@ -133,6 +134,7 @@ pub struct SettingsApp {
     ui_lang: u16,
     title: String,
     pub(crate) lighting: lighting::Edit,
+    pub(crate) ambilight: ambilight::Edit,
     pub(crate) device: device::Edit,
     pub(crate) copied_at: Option<Instant>,
     started_backend: bool,
@@ -147,6 +149,7 @@ impl SettingsApp {
             ui_lang: platform::ui_language(),
             title: String::new(),
             lighting: lighting::Edit::default(),
+            ambilight: ambilight::Edit::default(),
             device: device::Edit::default(),
             copied_at: None,
             started_backend: false,
@@ -157,6 +160,7 @@ impl SettingsApp {
         match tab {
             Tab::Device => s.tab_device,
             Tab::Lighting => s.tab_lighting,
+            Tab::Ambilight => s.tab_ambilight,
             Tab::General => s.tab_general,
             Tab::Diagnostics => s.tab_diagnostics,
         }
@@ -197,6 +201,7 @@ impl eframe::App for SettingsApp {
             egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
                 Tab::Device => device::show(ui, s, &snap, &self.backend, &mut self.device),
                 Tab::Lighting => lighting::show(ui, s, &snap, &self.backend, &mut self.lighting),
+                Tab::Ambilight => ambilight::show(ui, s, &snap, &self.backend, &mut self.ambilight),
                 Tab::General => general::show(ui, s, &snap, &self.backend),
                 Tab::Diagnostics => diagnostics::show(ui, s, &snap, &mut self.copied_at),
             });

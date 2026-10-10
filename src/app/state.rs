@@ -54,17 +54,19 @@ pub enum Tab {
     #[default]
     Device,
     Lighting,
+    Ambilight,
     General,
     Diagnostics,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Device, Tab::Lighting, Tab::General, Tab::Diagnostics];
+    pub const ALL: [Tab; 5] = [Tab::Device, Tab::Lighting, Tab::Ambilight, Tab::General, Tab::Diagnostics];
 
     pub fn as_arg(self) -> &'static str {
         match self {
             Self::Device => "device",
             Self::Lighting => "lighting",
+            Self::Ambilight => "ambilight",
             Self::General => "general",
             Self::Diagnostics => "diagnostics",
         }
