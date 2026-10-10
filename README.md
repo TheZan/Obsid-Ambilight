@@ -84,11 +84,11 @@ The icon shows the current state:
 
 | Icon | State |
 |---|---|
-| Disc in your colour | Static light is on |
-| Four-colour ring | Ambilight is running |
-| Grey ring | The strip is off, or kept dark while the screen is locked or off |
-| Amber dot | Searching for the strip or connecting |
-| Red dot | No connection; the app keeps retrying |
+| Monitor framed in your colour | Static light is on |
+| Monitor with a gradient frame and a wave | Ambilight is running; an amber dot means screen capture is unavailable |
+| Grey monitor | The strip is off, or kept dark while the screen is locked or off |
+| Grey monitor with an amber dot | Searching for the strip or connecting |
+| Grey monitor with a red dot | No connection; the app keeps retrying |
 
 Hover over the icon to see the mode and the IP address of the strip.
 
