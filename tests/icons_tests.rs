@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use obsid_ambilight::app::controller::Controller;
-use obsid_ambilight::app::state::Connection;
-use obsid_ambilight::config::Config;
+use obsid_ambilight::app::state::{CaptureStatus, Connection};
+use obsid_ambilight::config::{Config, Mode};
 use obsid_ambilight::protocol::Rgb;
 use obsid_ambilight::reconnect::Backoff;
 use obsid_ambilight::ui::icons::{IconKind, kind_for, render};
@@ -58,4 +58,44 @@ fn icon_kind_follows_connection_and_power() {
     assert_eq!(kind_for(&s), IconKind::Offline);
     s.connection = Connection::Offline;
     assert_eq!(kind_for(&s), IconKind::Offline);
+}
+
+#[test]
+fn ambilight_icon_is_a_ring_of_four_colours() {
+    let img = render(IconKind::Ambilight { warn: false }, 32);
+    assert_eq!(px(&img, 32, 16, 16)[3], 0, "hollow centre");
+    let corners = [px(&img, 32, 6, 6), px(&img, 32, 25, 6), px(&img, 32, 25, 25), px(&img, 32, 6, 25)];
+    for c in corners {
+        assert_eq!(c[3], 255, "{corners:?}");
+    }
+    for i in 0..4 {
+        for j in i + 1..4 {
+            assert_ne!(corners[i][..3], corners[j][..3], "quadrants {i} and {j}");
+        }
+    }
+}
+
+#[test]
+fn ambilight_warning_adds_an_amber_dot() {
+    let plain = render(IconKind::Ambilight { warn: false }, 32);
+    let warned = render(IconKind::Ambilight { warn: true }, 32);
+    assert_eq!(px(&warned, 32, 25, 25), [0xF2, 0xB3, 0x3D, 255]);
+    assert_ne!(px(&plain, 32, 25, 25), px(&warned, 32, 25, 25));
+}
+
+#[test]
+fn icon_kind_shows_ambilight_and_unavailable_capture() {
+    let mut s = Controller::new(
+        Config::default(),
+        vec![],
+        Backoff::with_seed(Duration::from_secs(1), Duration::from_secs(1), None, 1),
+    )
+    .snapshot(false);
+    s.connection = Connection::Ready;
+    s.config.app.mode = Mode::Ambilight;
+    assert_eq!(kind_for(&s), IconKind::Ambilight { warn: false });
+    s.stream.capture = Some(CaptureStatus { active: false, error: Some("lost".into()), ..CaptureStatus::default() });
+    assert_eq!(kind_for(&s), IconKind::Ambilight { warn: true });
+    s.config.light.power = false;
+    assert_eq!(kind_for(&s), IconKind::Off);
 }

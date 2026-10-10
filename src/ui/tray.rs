@@ -25,6 +25,7 @@ use crate::app::state::{Connection, Snapshot, Tab};
 use crate::app::worker::{Notice, Worker, WorkerOptions};
 use crate::capture::dxgi::DxgiGrabber;
 use crate::capture::{Grabber, GrabberFactory};
+use crate::config::Mode;
 use crate::i18n::{self, Strings};
 use crate::ipc::{Request, Response, TabRequest, pipe};
 use crate::platform::instance::{INSTANCE_MUTEX, InstanceGuard};
@@ -46,6 +47,8 @@ const ID_CUSTOM: u32 = 2;
 const ID_SEARCH: u32 = 3;
 const ID_SETTINGS: u32 = 4;
 const ID_EXIT: u32 = 5;
+const ID_MODE_STATIC: u32 = 6;
+const ID_MODE_AMBILIGHT: u32 = 7;
 const ID_PRESET: u32 = 100; // + index
 const ID_BRIGHT: u32 = 200; // + percent / 10
 
@@ -164,6 +167,7 @@ pub fn run() -> ExitCode {
         taskbar_created: unsafe { RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()) },
         suppress_next_up: false,
         exiting: false,
+        shown: None,
     });
     let app = Box::into_raw(app);
     // SAFETY: the window lives on this thread; the pointer is reclaimed below.
@@ -225,6 +229,8 @@ struct TrayApp {
     taskbar_created: u32,
     suppress_next_up: bool,
     exiting: bool,
+    /// Icon and tooltip last shown; unchanged ones are not re-sent.
+    shown: Option<(icons::IconKind, String)>,
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -306,14 +312,21 @@ impl TrayApp {
     fn refresh_icon(&mut self, add: bool) {
         let Some(snap) = self.snapshot() else { return };
         let s = Self::strings(&snap);
+        let kind = icons::kind_for(&snap);
+        let tip_text = tooltip(&snap, s);
+        // Stream statistics republish every second; skip identical updates.
+        if !add && self.shown.as_ref() == Some(&(kind, tip_text.clone())) {
+            return;
+        }
+        self.shown = Some((kind, tip_text.clone()));
         // SAFETY: plain metric query.
         let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
-        let new_icon = create_icon(&icons::render(icons::kind_for(&snap), size), size);
+        let new_icon = create_icon(&icons::render(kind, size), size);
         let mut nid = self.notify_data();
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = WM_APP_TRAY;
         nid.hIcon = new_icon;
-        let tip = wide(&tooltip(&snap, s));
+        let tip = wide(&tip_text);
         let n = tip.len().min(nid.szTip.len()) - 1;
         nid.szTip[..n].copy_from_slice(&tip[..n]);
         // SAFETY: fully initialised NOTIFYICONDATAW.
@@ -351,6 +364,11 @@ impl TrayApp {
             AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
             let power_label = if snap.config.light.power { s.power_off_item } else { s.power_on_item };
             append(menu, MF_STRING, ID_POWER as usize, power_label);
+            let mode_check = |m: Mode| {
+                if snap.config.light.power && snap.config.app.mode == m { MF_CHECKED } else { 0 }
+            };
+            append(menu, MF_STRING | mode_check(Mode::Static), ID_MODE_STATIC as usize, s.static_item);
+            append(menu, MF_STRING | mode_check(Mode::Ambilight), ID_MODE_AMBILIGHT as usize, s.ambilight_item);
 
             let colors = CreatePopupMenu();
             for (i, c) in snap.config.light.presets.iter().enumerate() {
@@ -374,9 +392,14 @@ impl TrayApp {
             append(menu, MF_POPUP, colors as usize, s.color_menu);
 
             let bright = CreatePopupMenu();
+            let current = if snap.config.app.mode == Mode::Ambilight {
+                snap.config.ambilight.brightness
+            } else {
+                snap.config.light.brightness
+            };
             for step in 1..=10u32 {
                 let pct = step * 10;
-                let checked = if u32::from(snap.config.light.brightness) == pct { MF_CHECKED } else { 0 };
+                let checked = if u32::from(current) == pct { MF_CHECKED } else { 0 };
                 append(bright, MF_STRING | checked, (ID_BRIGHT + step) as usize, &format!("{pct} %"));
             }
             append(menu, MF_POPUP, bright as usize, s.brightness_menu);
@@ -415,6 +438,8 @@ impl TrayApp {
             ID_POWER => self.send(Command::SetPower { on: !snap.config.light.power }),
             ID_CUSTOM => self.open_settings(Some(Tab::Lighting)),
             ID_SEARCH => self.send(Command::Discover),
+            ID_MODE_STATIC => self.send(Command::SetMode { mode: Mode::Static }),
+            ID_MODE_AMBILIGHT => self.send(Command::SetMode { mode: Mode::Ambilight }),
             ID_SETTINGS => self.open_settings(None),
             ID_EXIT => self.begin_exit(),
             id if (ID_PRESET..ID_PRESET + 100).contains(&id) => {
@@ -423,7 +448,14 @@ impl TrayApp {
                 }
             }
             id if (ID_BRIGHT + 1..=ID_BRIGHT + 10).contains(&id) => {
-                self.send(Command::SetStatic { color: None, brightness: Some(((id - ID_BRIGHT) * 10) as u8) });
+                let pct = ((id - ID_BRIGHT) * 10) as u8;
+                if snap.config.app.mode == Mode::Ambilight {
+                    let mut settings = snap.config.ambilight.clone();
+                    settings.brightness = pct;
+                    self.send(Command::SetAmbilight { settings });
+                } else {
+                    self.send(Command::SetStatic { color: None, brightness: Some(pct) });
+                }
             }
             _ => {}
         }
@@ -507,15 +539,27 @@ fn status_line(snap: &Snapshot, s: &Strings) -> String {
     }
 }
 
-fn tooltip(snap: &Snapshot, s: &Strings) -> String {
+pub fn tooltip(snap: &Snapshot, s: &Strings) -> String {
     let body = match snap.connection {
         Connection::Ready => {
             let ip = snap.device.as_ref().map(|d| d.ip.to_string()).unwrap_or_default();
             let l = &snap.config.light;
-            if l.power {
-                format!("{} {} · {}% · {ip}", s.mode_static, l.color, l.brightness)
-            } else {
+            if !l.power {
                 format!("{} · {ip}", s.mode_off)
+            } else if snap.config.app.mode == Mode::Ambilight {
+                let mut parts = vec![s.mode_ambilight.to_owned(), format!("{} FPS", snap.config.ambilight.fps)];
+                if let Some(c) = &snap.stream.capture {
+                    if c.hdr {
+                        parts.push("HDR".to_owned());
+                    }
+                    if !c.active && c.error.is_some() {
+                        parts.push(s.capture_unavailable.to_owned());
+                    }
+                }
+                parts.push(ip);
+                parts.join(" · ")
+            } else {
+                format!("{} {} · {}% · {ip}", s.mode_static, l.color, l.brightness)
             }
         }
         _ => status_line(snap, s),
