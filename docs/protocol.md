@@ -149,8 +149,9 @@ Apple Home after mode switches during Stage 4 soak tests.
 
 - Physical LED count and the hardware behaviour when `update_leds` carries more or
   fewer colours than physical LEDs (needs `obsid-poc direct --pattern ends`).
-- What the strip does when a direct-mode session expires *without*
-  `deactivate_fx_mode` (relevant for crash/abnormal exit).
+- ~~What the strip does when a direct-mode session expires *without*
+  `deactivate_fx_mode`~~ — answered 2026-10-10 (Stage 2 checklist A13, fw 36):
+  it keeps the last frame indefinitely; Apple Home still controls it.
 - Error format for an expired token.
 - Whether `udp_chroma_sess_new` differs from `udp_sess_new` (not needed so far).
 - Whether `set_bright` scales `update_leds` colours in direct mode (the app pins

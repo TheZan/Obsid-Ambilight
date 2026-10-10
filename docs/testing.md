@@ -69,13 +69,13 @@ still controls the strip. GPU tests: `cargo test --test capture_tests -- --ignor
 | A4 | Tray → «Ambilight» on the desktop, then «Статика» | Stream starts within ~1 s; static colour returns | ✅ 2026-10-10 (user): starts in ≤ 1 s, colours match the edges, static returns |
 | A5 | Full-screen game (exclusive and borderless) | Colours follow the game | ✅ 2026-10-10 (user): both modes follow the game, almost no pause on switching |
 | A6 | 21:9 film in a 16:9 player (or `docs/letterbox-test.html`, F11) | Bars ignored after ~1 s, colours from the picture | ✅ 2026-10-10 (user): film — top/bottom show the picture, no jumping in dark scenes, Diagnostics ~1 % (thin or non-black bars in that video); test page 2.39:1 — 12 % / 0 %, colours match |
-| A7 | Toggle Windows HDR while Ambilight runs | Short pause, then colours not washed out; Diagnostics shows HDR and SDR white | ⏳ |
-| A8 | UAC prompt / Win+L | Yellow dot, last colours held, capture resumes afterwards | ⏳ |
-| A9 | 20, 25, 30 FPS for 10 min each | Smooth; Diagnostics send FPS ≤ setting; Apple Home OK | ⏳ |
-| A10 | Ambilight brightness 30 % vs 100 % | Visibly dimmer; note whether `set_bright` affects direct mode | ⏳ |
-| A11 | Unplug the strip during Ambilight, plug back | Offline, retries; Ambilight resumes by itself | ⏳ |
-| A12 | Exit with «Оставить цвет» / «Выключить ленту» from Ambilight | Static colour / off | ⏳ |
-| A13 | Kill the process in Task Manager during Ambilight; wait 30 s | Record what the strip shows (open question from Stage 0) | ⏳ |
-| A14 | Restart the app in Ambilight mode | Ambilight resumes automatically | ⏳ |
-| A15 | CPU and RAM of the background process in Ambilight, 25 FPS, 1440p, 5 min | ≤ 3 % CPU average, ≤ 60 MB RAM | ⏳ |
-| A16 | CPU and RAM in Static after leaving Ambilight | Stage 1 targets (≤ 35 MB, ≤ 1 % CPU) | ⏳ |
+| A7 | Toggle Windows HDR while Ambilight runs | Short pause, then colours not washed out; Diagnostics shows HDR and SDR white | ✅ 2026-10-10 (user): ~1 s pause each way; colours saturated in HDR; Diagnostics «да, белый SDR 240 нит», after switching off «нет» |
+| A8 | UAC prompt / Win+L | Yellow dot, last colours held, capture resumes afterwards | ✅ 2026-10-10 (user): yellow dot shown, last colours held, Ambilight resumes after UAC and after unlocking. The lock screen picture itself is captured (it is drawn on the user desktop), so the strip shows its colours — behaviour on lock is a Stage 3 decision |
+| A9 | 20, 25, 30 FPS for 10 min each | Smooth; Diagnostics send FPS ≤ setting; Apple Home OK | ✅ 2026-10-10 (user): smooth at 20, 25 and 30 FPS, send rate within the setting, Apple Home OK |
+| A10 | Ambilight brightness 30 % vs 100 % | Visibly dimmer; note whether `set_bright` affects direct mode | ✅ 2026-10-10 (user): 30 % visibly dimmer, colours not distorted; tray «Яркость ▸» works in Ambilight. Hardware brightness stays pinned at 100, so the effect of `set_bright` on direct mode was not needed |
+| A11 | Unplug the strip during Ambilight, plug back | Offline, retries; Ambilight resumes by itself | ✅ 2026-10-10 (user): goes offline quickly, Ambilight resumes by itself after power returns, Apple Home OK |
+| A12 | Exit with «Оставить цвет» / «Выключить ленту» from Ambilight | Static colour / off | ✅ 2026-10-10 (user): keep → static colour, off → strip off; Apple Home OK after both |
+| A13 | Kill the process in Task Manager during Ambilight; wait 30 s | Record what the strip shows (open question from Stage 0) | ✅ 2026-10-10 (user): the strip freezes on the last Ambilight frame and stays there after the session expires; Apple Home still controls it |
+| A14 | Restart the app in Ambilight mode | Ambilight resumes automatically | ✅ 2026-10-10 (user): after the A13 crash, a plain restart resumed live Ambilight within a second or two, no clicks |
+| A15 | CPU and RAM of the background process in Ambilight, 25 FPS, 1440p, 5 min | ≤ 3 % CPU average, ≤ 60 MB RAM | ✅ 2026-10-10, moving picture: CPU 0.16 % of 16 cores (2.5 % of one core); working set 37.9 → 38.9 MB, flat after 2 min; private 77.8 MB (D3D11/NVIDIA driver commit); 18 threads |
+| A16 | CPU and RAM in Static after leaving Ambilight | Stage 1 targets (≤ 35 MB, ≤ 1 % CPU) | ✅ 2026-10-10, same process after A15: CPU 0.000 s over 120 s; working set 26.3 MB (GPU driver DLLs stay mapped; Stage 1 cold start was 13.1 MB); private 77.8 → 6.7 MB, threads 18 → 7 — capture and D3D resources released |
