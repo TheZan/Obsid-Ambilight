@@ -22,6 +22,7 @@ pub struct Edit {
     touched: Option<Instant>,
     /// Listed once per window, when the tab is first shown.
     monitors: Option<Vec<MonitorInfo>>,
+    pub(crate) layout: super::layout_editor::Edit,
 }
 
 pub fn monitor_label(s: &Strings, m: &MonitorInfo) -> String {
@@ -106,4 +107,8 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, backend: &Backend, 
         edit.settings = Some(a.clone());
         backend.send(Command::SetAmbilight { settings: a });
     }
+
+    ui.separator();
+    let aspect = aspect_of(edit.monitors.as_deref().unwrap_or_default(), &snap.config.ambilight.monitor);
+    super::layout_editor::show(ui, s, snap, backend, &mut edit.layout, aspect);
 }

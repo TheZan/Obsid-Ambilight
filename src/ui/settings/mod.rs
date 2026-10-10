@@ -5,6 +5,7 @@ pub mod ambilight;
 pub mod device;
 pub mod diagnostics;
 pub mod general;
+pub mod layout_editor;
 pub mod lighting;
 
 use std::process::ExitCode;
@@ -186,6 +187,9 @@ impl eframe::App for SettingsApp {
                 ui.selectable_value(&mut self.tab, tab, Self::tab_label(s, tab));
             }
         });
+        if self.tab != Tab::Ambilight {
+            self.ambilight.layout.leave(&self.backend);
+        }
         egui::CentralPanel::default().show(ui, |ui| {
             let Some(snap) = snap else {
                 ui.add_space(24.0);

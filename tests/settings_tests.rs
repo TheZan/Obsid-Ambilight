@@ -98,3 +98,45 @@ fn ambilight_tab_is_a_command_line_tab() {
     assert_eq!(Tab::from_arg("ambilight"), Some(Tab::Ambilight));
     assert_eq!(Tab::from_index(Tab::Ambilight.index()), Tab::Ambilight);
 }
+
+mod layout_editor {
+    use eframe::egui::{Rect, pos2, vec2};
+    use obsid_ambilight::config::Segment;
+    use obsid_ambilight::ui::settings::layout_editor::{
+        fit, free_range, from_screen, snap_point, to_screen, unused_count,
+    };
+
+    fn seg(from: usize, to: usize) -> Segment {
+        Segment { from, to, start: [0.0, 0.0], end: [1.0, 0.0] }
+    }
+
+    #[test]
+    fn ends_snap_to_the_5_percent_grid_when_close() {
+        assert_eq!(snap_point([0.012, 0.5]), [0.0, 0.5]);
+        assert_eq!(snap_point([0.03, 0.27]), [0.03, 0.27], "too far from a grid line");
+        assert_eq!(snap_point([0.991, 1.2]), [1.0, 1.0], "clamped, then snapped");
+    }
+
+    #[test]
+    fn screen_mapping_round_trips() {
+        let r = Rect::from_min_size(pos2(10.0, 20.0), vec2(400.0, 225.0));
+        assert_eq!(to_screen(r, [0.5, 1.0]), pos2(210.0, 245.0));
+        assert_eq!(from_screen(r, pos2(210.0, 245.0)), [0.5, 1.0]);
+        assert_eq!(from_screen(r, pos2(-50.0, 999.0)), [0.0, 1.0], "outside points are clamped");
+    }
+
+    #[test]
+    fn schematic_keeps_the_monitor_aspect() {
+        let r = fit(Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 300.0)), 16.0 / 9.0);
+        assert_eq!((r.width(), r.height()), (400.0, 225.0));
+        assert_eq!(r.center(), pos2(200.0, 150.0));
+    }
+
+    #[test]
+    fn new_segments_take_the_first_free_leds() {
+        assert_eq!(free_range(&[], 60), Some((0, 9)));
+        assert_eq!(free_range(&[seg(0, 9), seg(20, 15)], 60), Some((10, 14)));
+        assert_eq!(free_range(&[seg(0, 59)], 60), None);
+        assert_eq!(unused_count(&[seg(0, 9), seg(20, 15)], 60), 44);
+    }
+}
