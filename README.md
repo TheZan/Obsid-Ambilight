@@ -15,7 +15,7 @@ Ambilight, without Yeelight Station, SignalRGB, cloud accounts or a web view.
 | Stage 0 — Leaving direct mode (`deactivate_fx_mode`) | ✅ confirmed on hardware; Apple Home outages seen twice, not reproducible |
 | Stage 1 — tray, settings window (RU/EN), static control, reconnect, single instance | ✅ implemented and verified on hardware |
 | Stage 2 — Ambilight: DXGI capture (HDR, letterbox), segment layout editor, streaming, resume | ✅ implemented and verified on hardware |
-| Windows lifecycle (autostart, shutdown, sleep) | Stage 3 |
+| Stage 3 — Windows lifecycle: autostart, lock, sleep, display off, shutdown | ✅ implemented, hardware checklist in docs/testing.md |
 
 Details: [docs/protocol.md](docs/protocol.md), hardware checklist:
 [docs/testing.md](docs/testing.md), Stage 1 design:
@@ -54,6 +54,9 @@ target/release/obsid-ambilight.exe
   there: «Поиск диода» shows where each LED is; draw one segment per straight
   run of the strip (one line on the screen schematic, front view). Ambilight
   resumes by itself after a restart or a lost connection.
+- The app starts with Windows (Settings → General → «Запускать вместе с Windows»).
+  The strip goes dark while the screen is locked or off, while the PC sleeps,
+  and at shutdown or logoff, and returns to its mode afterwards.
 - The interface is in Russian or English (follows Windows, can be changed in
   the settings).
 

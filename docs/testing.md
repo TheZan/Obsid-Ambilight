@@ -79,3 +79,20 @@ still controls the strip. GPU tests: `cargo test --test capture_tests -- --ignor
 | A14 | Restart the app in Ambilight mode | Ambilight resumes automatically | ✅ 2026-10-10 (user): after the A13 crash, a plain restart resumed live Ambilight within a second or two, no clicks |
 | A15 | CPU and RAM of the background process in Ambilight, 25 FPS, 1440p, 5 min | ≤ 3 % CPU average, ≤ 60 MB RAM | ✅ 2026-10-10, moving picture: CPU 0.16 % of 16 cores (2.5 % of one core); working set 37.9 → 38.9 MB, flat after 2 min; private 77.8 MB (D3D11/NVIDIA driver commit); 18 threads |
 | A16 | CPU and RAM in Static after leaving Ambilight | Stage 1 targets (≤ 35 MB, ≤ 1 % CPU) | ✅ 2026-10-10, same process after A15: CPU 0.000 s over 120 s; working set 26.3 MB (GPU driver DLLs stay mapped; Stage 1 cold start was 13.1 MB); private 77.8 → 6.7 MB, threads 18 → 7 — capture and D3D resources released |
+
+## Stage 3 on hardware
+
+Run `target\release\obsid-ambilight.exe`. After each row, check that Apple Home
+still controls the strip.
+
+| # | Scenario | Expected | Result |
+|---|---|---|---|
+| L1 | First start of the Stage 3 build | Task Manager → Startup apps lists Obsid Ambilight (enabled) | ⏳ |
+| L2 | Win+L, wait 10 s, unlock — in Static and in Ambilight | Off while locked; mode returns after unlock | ⏳ |
+| L3 | Display turns off by the power plan timer (set it to 1 min for the test), then move the mouse | Off with the display; mode returns with it | ⏳ |
+| L4 | Sleep (Start → Power → Sleep), wake up | Off before sleeping; mode returns after waking (maybe after a network retry) | ⏳ |
+| L5 | Restart Windows in Ambilight | Off during shutdown (no frozen frame); after logon the app starts by itself and Ambilight resumes | ⏳ |
+| L6 | Sign out and back in | Off at sign-out; app starts and resumes at sign-in | ⏳ |
+| L7 | Uncheck «Запускать вместе с Windows», then check it again | Entry disappears from / returns to Startup apps | ⏳ |
+| L8 | Disable the app in Task Manager → Startup apps, restart Windows | App does not start; the checkbox still shows on (hint explains) | ⏳ |
+| L9 | Lock while the settings window highlights a LED | Highlight ends, strip off; after unlock the mode returns | ⏳ |
