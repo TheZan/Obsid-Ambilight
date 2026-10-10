@@ -790,3 +790,14 @@ fn lifecycle_commands_are_tray_only() {
     }
     assert!(Command::SetAutostart { enabled: true }.allowed_over_ipc());
 }
+
+#[test]
+fn restored_dark_reasons_keep_the_strip_off_after_a_restart() {
+    let now = Instant::now();
+    let mut c = ctrl(saved_cfg());
+    c.restore_dark(&[Dark::Locked]);
+    c.handle(Event::Startup, now);
+    let a = c.handle(Event::Resolved(Ok(Resolved { device: dev("dcda0cd778bc", IP), verified: true })), now);
+    assert_eq!(a, vec![Action::Apply { ip: IP, change: LightChange::off() }]);
+    assert_eq!(c.snapshot(false).dark, vec![Dark::Locked]);
+}

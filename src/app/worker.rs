@@ -135,6 +135,15 @@ struct Progress {
     cv: Condvar,
 }
 
+/// Marks a batch of commands as handled when dropped, also during a panic.
+struct Handled<'a>(&'a Progress, u64);
+
+impl Drop for Handled<'_> {
+    fn drop(&mut self) {
+        self.0.advance(self.1);
+    }
+}
+
 impl Progress {
     fn advance(&self, n: u64) {
         *self.done.lock().unwrap_or_else(PoisonError::into_inner) += n;
@@ -218,6 +227,7 @@ impl Worker {
                             error!(restarts, "device worker panicked, restarting");
                             let snap = ctx.snapshot();
                             ctrl = new_controller(snap.config, snap.config_warnings);
+                            ctrl.restore_dark(&snap.dark);
                             for e in snap.errors {
                                 ctrl.record_error(e);
                             }
@@ -330,14 +340,14 @@ fn run(ctrl: &mut Controller, link: &mut dyn DeviceLink, rx: &Receiver<Command>,
                     }
                     batch.extend(rx.try_iter());
                 }
-                let handled = batch.len() as u64;
+                // Counted even when handling panics, so waiting senders are not stuck.
+                let _handled = Handled(&ctx.progress, batch.len() as u64);
                 for cmd in coalesce(batch) {
                     process(ctrl, link, ctx, &mut state, Event::Command(cmd));
                     if state.exit {
                         break;
                     }
                 }
-                ctx.progress.advance(handled);
             }
             Err(RecvTimeoutError::Timeout) => process(ctrl, link, ctx, &mut state, Event::Tick),
             Err(RecvTimeoutError::Disconnected) => {

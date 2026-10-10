@@ -34,6 +34,8 @@ struct Script {
     devices: Vec<DeviceInfo>,
     fail_handshake: bool,
     panic_on_first_discover: bool,
+    /// The next `apply` panics (a worker crash mid-batch).
+    panic_on_next_apply: bool,
     /// The next `stream_tick` reports a lost session.
     fail_next_tick: bool,
     /// Session counts as open until this moment (set by `apply`).
@@ -82,7 +84,11 @@ impl DeviceLink for FakeLink {
         if s.fail_handshake { Err("timeout".into()) } else { Ok(Duration::from_millis(12)) }
     }
     fn apply(&mut self, ip: Ipv4Addr, change: LightChange) -> Result<(), String> {
-        let delay = self.0.lock().unwrap().apply_delay;
+        let (delay, crash) = {
+            let mut s = self.0.lock().unwrap();
+            (s.apply_delay, std::mem::take(&mut s.panic_on_next_apply))
+        };
+        assert!(!crash, "simulated worker crash while applying");
         std::thread::sleep(delay);
         let mut s = self.0.lock().unwrap();
         s.calls.push(Call::Apply(ip, change));
@@ -545,4 +551,32 @@ fn locking_in_ambilight_stops_capture_and_unlocking_restarts_it() {
     assert_eq!(alive.load(Ordering::SeqCst), 0);
     w.send(Command::Undarken { reason: Dark::Locked });
     wait_calls(&link, "second start", |c| c.iter().filter(|x| matches!(x, Call::StartStream(..))).count() == 2);
+}
+
+#[test]
+fn send_and_wait_still_works_after_a_worker_crash() {
+    let link = FakeLink::with_strip();
+    let (w, _) = spawn(saved_cfg(), link.clone(), None);
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    link.0.lock().unwrap().panic_on_next_apply = true;
+    w.send(Command::SetPower { on: false });
+    wait_for(&w, "restart", |s| s.errors.iter().any(|e| e.contains("restarted")));
+    assert!(w.handle().send_and_wait(
+        Command::SetLanguage { language: obsid_ambilight::config::Language::En },
+        Duration::from_secs(2)
+    ));
+}
+
+#[test]
+fn dark_reasons_survive_a_worker_crash() {
+    let link = FakeLink::with_strip();
+    let (w, _) = spawn(saved_cfg(), link.clone(), None);
+    wait_for(&w, "ready", |s| s.connection == Connection::Ready);
+    // The crash happens while turning the strip off for the lock.
+    link.0.lock().unwrap().panic_on_next_apply = true;
+    w.send(Command::Darken { reason: Dark::Locked });
+    let s = wait_for(&w, "restart", |s| {
+        s.errors.iter().any(|e| e.contains("restarted")) && s.connection == Connection::Ready
+    });
+    assert_eq!(s.dark, vec![Dark::Locked], "still locked after the restart");
 }

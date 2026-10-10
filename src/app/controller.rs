@@ -194,6 +194,12 @@ impl Controller {
         self.streaming && self.connection == Connection::Ready && self.desired() == Desired::Ambilight
     }
 
+    /// Carries the Windows dark reasons over a worker restart; Windows will
+    /// not repeat the lock or display-off event.
+    pub fn restore_dark(&mut self, dark: &[Dark]) {
+        self.dark = dark.iter().copied().collect();
+    }
+
     pub fn record_error(&mut self, message: String) {
         warn!(%message, "error");
         if self.errors.len() == MAX_ERRORS {
