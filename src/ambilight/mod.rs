@@ -6,4 +6,5 @@ pub mod image;
 pub mod layout;
 pub mod letterbox;
 pub mod pipeline;
+pub mod rate;
 pub mod smooth;

@@ -4,6 +4,7 @@
 pub mod display;
 pub mod dxgi;
 pub mod outputs;
+pub mod thread;
 
 use std::sync::Arc;
 
