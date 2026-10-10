@@ -10,17 +10,23 @@ use super::worker::DeviceLink;
 use crate::discovery::{self, DiscoveryOptions};
 use crate::protocol::device::Chameleon2;
 use crate::protocol::packets::MAX_LEDS;
-use crate::protocol::session::SessionConfig;
+use crate::protocol::session::{Session, SessionConfig};
 use crate::protocol::transport::UdpTransport;
-use crate::protocol::{self, ProtocolError, Rgb};
+use crate::protocol::{self, CONTROL_PORT, ProtocolError, Rgb};
 
 /// A session unused for this long is assumed expired on the device
 /// (it announces a 10 s keep-alive interval) and is replaced.
 pub const SESSION_IDLE: Duration = Duration::from_secs(5);
 
-#[derive(Default)]
 pub struct UdpLink {
     current: Option<(Ipv4Addr, Chameleon2<UdpTransport>, Instant)>,
+    port: u16,
+}
+
+impl Default for UdpLink {
+    fn default() -> Self {
+        Self::with_port(CONTROL_PORT)
+    }
 }
 
 impl UdpLink {
@@ -28,16 +34,29 @@ impl UdpLink {
         Self::default()
     }
 
-    fn connect(ip: Ipv4Addr, cfg: SessionConfig) -> protocol::Result<Chameleon2<UdpTransport>> {
+    /// A link to strips listening on another UDP port (tests use a loopback fake).
+    pub fn with_port(port: u16) -> Self {
+        Self { current: None, port }
+    }
+
+    /// New session on the strip at `ip`.
+    fn open(&self, ip: Ipv4Addr, led_count: usize, cfg: SessionConfig) -> protocol::Result<Chameleon2<UdpTransport>> {
+        let transport = UdpTransport::connect(ip, self.port)?;
+        let mut dev = Chameleon2::new(Session::new(transport, cfg), led_count)?;
+        dev.session_mut().open()?;
+        Ok(dev)
+    }
+
+    fn connect(&self, ip: Ipv4Addr, cfg: SessionConfig) -> protocol::Result<Chameleon2<UdpTransport>> {
         // LED count is irrelevant for static commands.
-        Chameleon2::connect(ip, MAX_LEDS, cfg)
+        self.open(ip, MAX_LEDS, cfg)
     }
 
     fn device(&mut self, ip: Ipv4Addr) -> protocol::Result<&mut Chameleon2<UdpTransport>> {
         let reusable = matches!(&self.current, Some((cur, dev, used)) if *cur == ip && dev.session().is_open() && used.elapsed() < SESSION_IDLE);
         if !reusable {
             self.current = None;
-            let dev = Self::connect(ip, SessionConfig::default())?;
+            let dev = self.connect(ip, SessionConfig::default())?;
             self.current = Some((ip, dev, Instant::now()));
         }
         let (_, dev, used) = self.current.as_mut().expect("session just ensured");
@@ -76,9 +95,20 @@ impl DeviceLink for UdpLink {
     }
 
     fn handshake(&mut self, ip: Ipv4Addr) -> Result<Duration, String> {
+        // A connection test must not end a running stream: time a keep-alive on it instead.
+        if let Some((cur, dev, used)) = self.current.as_mut()
+            && *cur == ip
+            && dev.is_direct()
+            && dev.session().is_open()
+        {
+            let start = Instant::now();
+            dev.session_mut().keep_alive().map_err(text)?;
+            *used = Instant::now();
+            return Ok(start.elapsed());
+        }
         self.current = None;
         let start = Instant::now();
-        let dev = Self::connect(ip, SessionConfig::default()).map_err(text)?;
+        let dev = self.connect(ip, SessionConfig::default()).map_err(text)?;
         let took = start.elapsed();
         self.current = Some((ip, dev, Instant::now()));
         Ok(took)
@@ -98,7 +128,8 @@ impl DeviceLink for UdpLink {
         let quick = quick_config();
         let reusable = matches!(&self.current, Some((cur, dev, used)) if *cur == ip && dev.session().is_open() && used.elapsed() < SESSION_IDLE);
         if !reusable {
-            self.current = Some((ip, Self::connect(ip, quick).map_err(text)?, Instant::now()));
+            let dev = self.connect(ip, quick).map_err(text)?;
+            self.current = Some((ip, dev, Instant::now()));
         }
         let (_, dev, _) = self.current.as_mut().expect("session just ensured");
         dev.set_power(false).map_err(text)
@@ -106,7 +137,7 @@ impl DeviceLink for UdpLink {
 
     fn start_stream(&mut self, ip: Ipv4Addr, led_count: usize) -> Result<(), String> {
         self.current = None;
-        let mut dev = Chameleon2::connect(ip, led_count, SessionConfig::default()).map_err(text)?;
+        let mut dev = self.open(ip, led_count, SessionConfig::default()).map_err(text)?;
         // Hardware brightness stays at 100; Ambilight brightness is applied to the frames.
         dev.set_power(true).and_then(|()| dev.set_brightness(100)).and_then(|()| dev.enter_direct()).map_err(text)?;
         self.current = Some((ip, dev, Instant::now()));
@@ -138,7 +169,8 @@ impl DeviceLink for UdpLink {
         let reusable = matches!(&self.current, Some((cur, dev, _)) if *cur == ip && dev.session().is_open());
         if !reusable {
             let cfg = if quick { quick_config() } else { SessionConfig::default() };
-            self.current = Some((ip, Self::connect(ip, cfg).map_err(text)?, Instant::now()));
+            let dev = self.connect(ip, cfg).map_err(text)?;
+            self.current = Some((ip, dev, Instant::now()));
         }
         let (_, dev, used) = self.current.as_mut().expect("session just ensured");
         *used = Instant::now();
