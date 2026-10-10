@@ -51,7 +51,8 @@ jobs:
         run: |
           $name = "ObsidAmbilight-Setup-$env:VERSION.exe"
           $hash = (Get-FileHash "target\installer\$name" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name" | Out-File target\installer\SHA256SUMS.txt -Encoding ascii
+          # LF line ending, so `sha256sum -c` works on Linux and macOS too.
+          [IO.File]::WriteAllText("$PWD\target\installer\SHA256SUMS.txt", "$hash  $name`n")
 
       - name: Publish the release
         env:
