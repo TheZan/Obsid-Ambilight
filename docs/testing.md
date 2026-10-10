@@ -87,12 +87,12 @@ still controls the strip.
 
 | # | Scenario | Expected | Result |
 |---|---|---|---|
-| L1 | First start of the Stage 3 build | Task Manager → Startup apps lists Obsid Ambilight (enabled) | ⏳ |
-| L2 | Win+L, wait 10 s, unlock — in Static and in Ambilight | Off while locked; mode returns after unlock | ⏳ |
-| L3 | Display turns off by the power plan timer (set it to 1 min for the test), then move the mouse | Off with the display; mode returns with it | ⏳ |
-| L4 | Sleep (Start → Power → Sleep), wake up | Off before sleeping; mode returns after waking (maybe after a network retry) | ⏳ |
-| L5 | Restart Windows in Ambilight | Off during shutdown (no frozen frame); after logon the app starts by itself and Ambilight resumes | ⏳ |
-| L6 | Sign out and back in | Off at sign-out; app starts and resumes at sign-in | ⏳ |
-| L7 | Uncheck «Запускать вместе с Windows», then check it again | Entry disappears from / returns to Startup apps | ⏳ |
-| L8 | Disable the app in Task Manager → Startup apps, restart Windows | App does not start; the checkbox still shows on (hint explains) | ⏳ |
-| L9 | Lock while the settings window highlights a LED | Highlight ends, strip off; after unlock the mode returns | ⏳ |
+| L1 | First start of the Stage 3 build | Task Manager → Startup apps lists Obsid Ambilight (enabled) | ✅ listed as «obsid-ambilight», Включено |
+| L2 | Win+L, wait 10 s, unlock — in Static and in Ambilight | Off while locked; mode returns after unlock | ✅ Static and Ambilight: off at once on lock, mode back after unlock |
+| L3 | Display turns off by the power plan timer (set it to 1 min for the test), then move the mouse | Off with the display; mode returns with it | ✅ off with the display, Ambilight back on mouse move |
+| L4 | Sleep (Start → Power → Sleep), wake up | Off before sleeping; mode returns after waking (maybe after a network retry) | ✅ off before sleeping, Ambilight back after waking |
+| L5 | Restart Windows in Ambilight | Off during shutdown (no frozen frame); after logon the app starts by itself and Ambilight resumes | ✅ off during restart; after logon the app started itself and Ambilight resumed |
+| L6 | Sign out and back in | Off at sign-out; app starts and resumes at sign-in | ✅ off at sign-out; app started itself and Ambilight resumed at sign-in |
+| L7 | Uncheck «Запускать вместе с Windows», then check it again | Entry disappears from / returns to Startup apps | ✅ entry disappears and returns; hint shown |
+| L8 | Disable the app in Task Manager → Startup apps, restart Windows | App does not start; the checkbox still shows on (hint explains) | ✅ app did not start; checkbox still on (expected, the hint explains) |
+| L9 | Lock while the settings window highlights a LED | Highlight ends, strip off; after unlock the mode returns | ✅ off on lock incl. highlight; mode back without highlight after unlock |

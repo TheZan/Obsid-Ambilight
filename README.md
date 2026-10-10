@@ -15,7 +15,7 @@ Ambilight, without Yeelight Station, SignalRGB, cloud accounts or a web view.
 | Stage 0 — Leaving direct mode (`deactivate_fx_mode`) | ✅ confirmed on hardware; Apple Home outages seen twice, not reproducible |
 | Stage 1 — tray, settings window (RU/EN), static control, reconnect, single instance | ✅ implemented and verified on hardware |
 | Stage 2 — Ambilight: DXGI capture (HDR, letterbox), segment layout editor, streaming, resume | ✅ implemented and verified on hardware |
-| Stage 3 — Windows lifecycle: autostart, lock, sleep, display off, shutdown | ✅ implemented, hardware checklist in docs/testing.md |
+| Stage 3 — Windows lifecycle: autostart, lock, sleep, display off, shutdown | ✅ implemented and verified on hardware |
 
 Details: [docs/protocol.md](docs/protocol.md), hardware checklist:
 [docs/testing.md](docs/testing.md), Stage 1 design:
