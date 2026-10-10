@@ -1,0 +1,63 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check that the tag matches Cargo.toml
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ($env:TAG.TrimStart('v') -ne $version) {
+            throw "Tag $env:TAG does not match version $version in Cargo.toml"
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo build --release
+
+      - name: Build the installer
+        run: |
+          $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            choco install innosetup -y --no-progress
+            $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+              Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          & $iscc installer\obsid-ambilight.iss
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Write checksums
+        run: |
+          $name = "ObsidAmbilight-Setup-$env:VERSION.exe"
+          $hash = (Get-FileHash "target\installer\$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File target\installer\SHA256SUMS.txt -Encoding ascii
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:TAG `
+            "target\installer\ObsidAmbilight-Setup-$env:VERSION.exe" `
+            target\installer\SHA256SUMS.txt `
+            --verify-tag --title "Obsid Ambilight $env:VERSION" --generate-notes
