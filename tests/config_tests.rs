@@ -3,7 +3,9 @@ mod common;
 use std::fs;
 use std::net::Ipv4Addr;
 
-use obsid_ambilight::config::{self, Config, ExitAction, Language, LogLevel, MAX_PRESETS};
+use obsid_ambilight::config::{
+    self, AmbilightConfig, Config, ExitAction, Language, LogLevel, MAX_PRESETS, Mode, Segment,
+};
 use obsid_ambilight::protocol::Rgb;
 
 const SPEC_EXAMPLE: &str = r##"
@@ -202,4 +204,109 @@ fn non_utf8_file_is_treated_as_broken() {
 fn log_level_maps_to_tracing() {
     assert_eq!(LogLevel::Info.as_tracing(), tracing::Level::INFO);
     assert_eq!(LogLevel::Trace.as_tracing(), tracing::Level::TRACE);
+}
+
+#[test]
+fn stage1_file_loads_with_static_mode_and_default_layout() {
+    let l = config::parse(SPEC_EXAMPLE).unwrap();
+    assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    assert_eq!(l.config.app.mode, Mode::Static);
+    assert_eq!(l.config.ambilight, AmbilightConfig::defaults(60));
+}
+
+#[test]
+fn default_layout_follows_the_parsed_led_count() {
+    let l = config::parse("[device]\nled_count = 30\n").unwrap();
+    assert_eq!(l.config.ambilight.segments, obsid_ambilight::ambilight::layout::default_layout(30));
+}
+
+#[test]
+fn ambilight_section_round_trips() {
+    let dir = common::temp_dir("ambilight-round-trip");
+    let path = dir.join("config.toml");
+    let mut c = Config::default();
+    c.app.mode = Mode::Ambilight;
+    c.ambilight.monitor = r"\\.\DISPLAY2".into();
+    c.ambilight.fps = 30;
+    c.ambilight.saturation = 1.5;
+    c.ambilight.segments = vec![
+        Segment { from: 0, to: 9, start: [0.1, 0.9], end: [0.1, 0.1] },
+        Segment { from: 30, to: 20, start: [0.25, 0.3], end: [0.75, 0.3] },
+    ];
+    config::save(&path, &c).unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("mode = \"ambilight\""), "{text}");
+    assert!(text.contains("[[ambilight.segments]]"), "{text}");
+    let l = config::load(&path);
+    assert!(l.warnings.is_empty(), "{:?}", l.warnings);
+    assert_eq!(l.config, c);
+}
+
+#[test]
+fn bad_ambilight_fields_fall_back_alone() {
+    let l = config::parse(
+        "[app]\nmode = \"rainbow\"\n[ambilight]\nfps = 99\ndepth = 1.0\nsaturation = \"x\"\nsmoothing = 200\nbrightness = 50\n",
+    )
+    .unwrap();
+    let d = AmbilightConfig::defaults(60);
+    assert_eq!(l.config.app.mode, Mode::Static);
+    assert_eq!(l.config.ambilight.fps, d.fps);
+    assert_eq!(l.config.ambilight.depth, d.depth);
+    assert_eq!(l.config.ambilight.saturation, d.saturation);
+    assert_eq!(l.config.ambilight.smoothing, d.smoothing);
+    assert_eq!(l.config.ambilight.brightness, 50, "valid neighbours are kept");
+    assert_eq!(l.warnings.len(), 5, "{:?}", l.warnings);
+}
+
+#[test]
+fn invalid_segments_are_skipped_with_warnings() {
+    let text = r#"
+[[ambilight.segments]]
+from = 0
+to = 9
+start = [0.0, 1.0]
+end = [0.0, 0.0]
+
+[[ambilight.segments]]
+from = 5
+to = 12
+start = [0.0, 0.0]
+end = [1.0, 0.0]
+
+[[ambilight.segments]]
+from = 20
+to = 25
+start = [1.5, 0.0]
+end = [1.0, 0.0]
+
+[[ambilight.segments]]
+from = 70
+to = 71
+start = [0.0, 0.0]
+end = [1.0, 0.0]
+
+[[ambilight.segments]]
+from = 40
+start = [0.0, 0.0]
+end = [1.0, 0.0]
+"#;
+    let l = config::parse(text).unwrap();
+    assert_eq!(l.config.ambilight.segments, vec![Segment { from: 0, to: 9, start: [0.0, 1.0], end: [0.0, 0.0] }]);
+    assert_eq!(l.warnings.len(), 4, "{:?}", l.warnings);
+}
+
+#[test]
+fn ambilight_check_reports_out_of_range_settings() {
+    let ok = AmbilightConfig::defaults(60);
+    assert_eq!(ok.check(), Ok(()));
+    for bad in [
+        AmbilightConfig { fps: 9, ..ok.clone() },
+        AmbilightConfig { depth: 0.3, ..ok.clone() },
+        AmbilightConfig { brightness: 0, ..ok.clone() },
+        AmbilightConfig { saturation: 2.5, ..ok.clone() },
+        AmbilightConfig { smoothing: 101, ..ok.clone() },
+        AmbilightConfig { black_threshold: 21, ..ok.clone() },
+    ] {
+        assert!(bad.check().is_err(), "{bad:?}");
+    }
 }

@@ -8,17 +8,24 @@
 use std::fs;
 use std::io::{self, Write};
 use std::net::Ipv4Addr;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use toml::{Table, Value};
 
+use crate::ambilight::layout;
 use crate::protocol::Rgb;
 use crate::protocol::packets::MAX_LEDS;
 
 pub const CONFIG_VERSION: u32 = 1;
 pub const MAX_PRESETS: usize = 16;
+pub const FPS_RANGE: RangeInclusive<u32> = 10..=30;
+pub const DEPTH_RANGE: RangeInclusive<f64> = 0.02..=0.25;
+pub const SATURATION_RANGE: RangeInclusive<f64> = 0.5..=2.0;
+pub const SMOOTHING_MAX: u8 = 100;
+pub const BLACK_THRESHOLD_MAX: u8 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -62,6 +69,83 @@ impl LogLevel {
     }
 }
 
+/// What the strip shows while it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Mode {
+    #[default]
+    Static,
+    Ambilight,
+}
+
+/// LEDs `from..=to` (or backwards when `from > to`) laid evenly along the line
+/// `start → end`; points are screen fractions 0..1, front view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Segment {
+    pub from: usize,
+    pub to: usize,
+    pub start: [f64; 2],
+    pub end: [f64; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AmbilightConfig {
+    /// DXGI output name such as `\\.\DISPLAY1`; empty = the primary monitor.
+    pub monitor: String,
+    pub fps: u32,
+    /// Side of the sampled square as a share of the shorter screen side.
+    pub depth: f64,
+    /// Software brightness, percent.
+    pub brightness: u8,
+    pub saturation: f64,
+    /// 0..=100, mapped to a 0–500 ms time constant.
+    pub smoothing: u8,
+    /// Percent; darker LEDs are switched off.
+    pub black_threshold: u8,
+    /// Leave letterbox/pillarbox bars out of the sampled area.
+    pub letterbox: bool,
+    pub segments: Vec<Segment>,
+}
+
+impl AmbilightConfig {
+    pub fn defaults(led_count: usize) -> Self {
+        Self {
+            monitor: String::new(),
+            fps: 25,
+            depth: 0.08,
+            brightness: 100,
+            saturation: 1.2,
+            smoothing: 25,
+            black_threshold: 3,
+            letterbox: true,
+            segments: layout::default_layout(led_count),
+        }
+    }
+
+    /// Checks every setting except the segments; returns the first problem.
+    pub fn check(&self) -> Result<(), String> {
+        if !FPS_RANGE.contains(&self.fps) {
+            return Err(format!("frame rate {} is outside {}..={}", self.fps, FPS_RANGE.start(), FPS_RANGE.end()));
+        }
+        if !DEPTH_RANGE.contains(&self.depth) {
+            return Err(format!("sample depth {} is outside {:?}", self.depth, DEPTH_RANGE));
+        }
+        if !(1..=100).contains(&self.brightness) {
+            return Err(format!("brightness {} is outside 1..=100", self.brightness));
+        }
+        if !SATURATION_RANGE.contains(&self.saturation) {
+            return Err(format!("saturation {} is outside {:?}", self.saturation, SATURATION_RANGE));
+        }
+        if self.smoothing > SMOOTHING_MAX {
+            return Err(format!("smoothing {} is above {SMOOTHING_MAX}", self.smoothing));
+        }
+        if self.black_threshold > BLACK_THRESHOLD_MAX {
+            return Err(format!("black threshold {} is above {BLACK_THRESHOLD_MAX}", self.black_threshold));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
@@ -71,6 +155,7 @@ pub struct Config {
     pub startup: StartupConfig,
     pub app: AppConfig,
     pub advanced: AdvancedConfig,
+    pub ambilight: AmbilightConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,6 +192,7 @@ pub struct StartupConfig {
 pub struct AppConfig {
     pub language: Language,
     pub exit_action: ExitAction,
+    pub mode: Mode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,8 +226,9 @@ impl Default for Config {
                 presets: default_presets(),
             },
             startup: StartupConfig { power_on: true },
-            app: AppConfig { language: Language::Auto, exit_action: ExitAction::Keep },
+            app: AppConfig { language: Language::Auto, exit_action: ExitAction::Keep, mode: Mode::Static },
             advanced: AdvancedConfig { log_level: LogLevel::Info },
+            ambilight: AmbilightConfig::defaults(60),
         }
     }
 }
@@ -158,18 +245,20 @@ pub fn parse(text: &str) -> Result<Loaded, String> {
     let table: Table = toml::from_str(text).map_err(|e| e.to_string())?;
     let mut r = Reader { table: &table, warnings: Vec::new() };
     let d = Config::default();
+    let device = DeviceConfig {
+        id: r.field("device", "id", d.device.id, as_string),
+        name: r.field("device", "name", d.device.name, as_string),
+        model: r.field("device", "model", d.device.model, as_string),
+        last_ip: r.field("device", "last_ip", d.device.last_ip, as_opt_ip),
+        manual_ip: r.field("device", "manual_ip", d.device.manual_ip, as_opt_ip),
+        led_count: r.field("device", "led_count", d.device.led_count, |v| {
+            v.as_integer().and_then(|n| usize::try_from(n).ok()).filter(|n| (1..=MAX_LEDS).contains(n))
+        }),
+    };
+    let ambilight = r.ambilight(device.led_count);
     let config = Config {
         version: CONFIG_VERSION,
-        device: DeviceConfig {
-            id: r.field("device", "id", d.device.id, as_string),
-            name: r.field("device", "name", d.device.name, as_string),
-            model: r.field("device", "model", d.device.model, as_string),
-            last_ip: r.field("device", "last_ip", d.device.last_ip, as_opt_ip),
-            manual_ip: r.field("device", "manual_ip", d.device.manual_ip, as_opt_ip),
-            led_count: r.field("device", "led_count", d.device.led_count, |v| {
-                v.as_integer().and_then(|n| usize::try_from(n).ok()).filter(|n| (1..=MAX_LEDS).contains(n))
-            }),
-        },
+        device,
         light: LightConfig {
             power: r.field("static", "power", d.light.power, |v| match v.as_str()? {
                 "on" => Some(true),
@@ -179,17 +268,18 @@ pub fn parse(text: &str) -> Result<Loaded, String> {
             color: r.field("static", "color", d.light.color, |v| {
                 v.as_str().and_then(Rgb::from_hex).filter(|c| *c != Rgb::BLACK)
             }),
-            brightness: r.field("static", "brightness", d.light.brightness, |v| {
-                v.as_integer().and_then(|n| u8::try_from(n).ok()).filter(|b| (1..=100).contains(b))
-            }),
+            brightness: r
+                .field("static", "brightness", d.light.brightness, |v| as_u8(v).filter(|b| (1..=100).contains(b))),
             presets: r.presets(d.light.presets),
         },
         startup: StartupConfig { power_on: r.field("startup", "power_on", d.startup.power_on, Value::as_bool) },
         app: AppConfig {
             language: r.field("app", "language", d.app.language, choice),
             exit_action: r.field("app", "exit_action", d.app.exit_action, choice),
+            mode: r.field("app", "mode", d.app.mode, choice),
         },
         advanced: AdvancedConfig { log_level: r.field("advanced", "log_level", d.advanced.log_level, choice) },
+        ambilight,
     };
     Ok(Loaded { config, warnings: r.warnings })
 }
@@ -301,10 +391,68 @@ impl<'a> Reader<'a> {
         self.warnings.extend(warnings);
         clean
     }
+
+    fn ambilight(&mut self, led_count: usize) -> AmbilightConfig {
+        let d = AmbilightConfig::defaults(led_count);
+        let s = "ambilight";
+        AmbilightConfig {
+            monitor: self.field(s, "monitor", d.monitor, as_string),
+            fps: self.field(s, "fps", d.fps, |v| {
+                v.as_integer().and_then(|n| u32::try_from(n).ok()).filter(|n| FPS_RANGE.contains(n))
+            }),
+            depth: self.field(s, "depth", d.depth, |v| as_f64(v).filter(|x| DEPTH_RANGE.contains(x))),
+            brightness: self.field(s, "brightness", d.brightness, |v| as_u8(v).filter(|b| (1..=100).contains(b))),
+            saturation: self
+                .field(s, "saturation", d.saturation, |v| as_f64(v).filter(|x| SATURATION_RANGE.contains(x))),
+            smoothing: self.field(s, "smoothing", d.smoothing, |v| as_u8(v).filter(|x| *x <= SMOOTHING_MAX)),
+            black_threshold: self
+                .field(s, "black_threshold", d.black_threshold, |v| as_u8(v).filter(|x| *x <= BLACK_THRESHOLD_MAX)),
+            letterbox: self.field(s, "letterbox", d.letterbox, Value::as_bool),
+            segments: self.segments(led_count, d.segments),
+        }
+    }
+
+    fn segments(&mut self, led_count: usize, default: Vec<Segment>) -> Vec<Segment> {
+        let Some(v) = self.get("ambilight", "segments") else { return default };
+        let Some(items) = v.as_array() else {
+            self.warnings.push(format!("ambilight.segments: invalid value {v}, using the default layout"));
+            return default;
+        };
+        let mut parsed = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            match parse_segment(item) {
+                Some(seg) => parsed.push(seg),
+                None => self.warnings.push(format!("ambilight.segments[{i}]: invalid entry {item}, skipped")),
+            }
+        }
+        let (clean, warnings) = layout::sanitize(parsed, led_count);
+        self.warnings.extend(warnings);
+        clean
+    }
 }
 
 fn as_string(v: &Value) -> Option<String> {
     v.as_str().map(str::to_owned)
+}
+
+fn as_u8(v: &Value) -> Option<u8> {
+    v.as_integer().and_then(|n| u8::try_from(n).ok())
+}
+
+fn as_f64(v: &Value) -> Option<f64> {
+    v.as_float().or_else(|| v.as_integer().map(|n| n as f64))
+}
+
+fn parse_segment(v: &Value) -> Option<Segment> {
+    let t = v.as_table()?;
+    let index = |k: &str| -> Option<usize> { t.get(k)?.as_integer().and_then(|n| usize::try_from(n).ok()) };
+    let point = |k: &str| -> Option<[f64; 2]> {
+        match t.get(k)?.as_array()?.as_slice() {
+            [x, y] => Some([as_f64(x)?, as_f64(y)?]),
+            _ => None,
+        }
+    };
+    Some(Segment { from: index("from")?, to: index("to")?, start: point("start")?, end: point("end")? })
 }
 
 fn as_opt_ip(v: &Value) -> Option<Option<Ipv4Addr>> {
@@ -325,6 +473,10 @@ impl Choice for Language {
 
 impl Choice for ExitAction {
     const NAMES: &'static [(&'static str, Self)] = &[("keep", Self::Keep), ("off", Self::Off)];
+}
+
+impl Choice for Mode {
+    const NAMES: &'static [(&'static str, Self)] = &[("static", Self::Static), ("ambilight", Self::Ambilight)];
 }
 
 impl Choice for LogLevel {

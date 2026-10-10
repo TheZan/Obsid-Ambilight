@@ -6,6 +6,7 @@
 //! device by its stable id. Stage 1 adds the tray application on top (see
 //! `docs/superpowers/specs`).
 
+pub mod ambilight;
 pub mod app;
 pub mod config;
 pub mod diagnostics;
