@@ -8,6 +8,7 @@
 
 pub mod ambilight;
 pub mod app;
+pub mod capture;
 pub mod config;
 pub mod diagnostics;
 pub mod discovery;
