@@ -19,6 +19,14 @@ use windows_sys::Win32::UI::Shell::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use windows_sys::Win32::System::Power::{
+    HPOWERNOTIFY, POWERBROADCAST_SETTING, RegisterPowerSettingNotification, UnregisterPowerSettingNotification,
+};
+use windows_sys::Win32::System::RemoteDesktop::{
+    NOTIFY_FOR_THIS_SESSION, WTSRegisterSessionNotification, WTSUnRegisterSessionNotification,
+};
+use windows_sys::Win32::System::SystemServices::GUID_CONSOLE_DISPLAY_STATE;
+
 use crate::app::commands::Command;
 use crate::app::link::UdpLink;
 use crate::app::state::{Connection, Snapshot, Tab};
@@ -31,6 +39,7 @@ use crate::ipc::{Request, Response, TabRequest, pipe};
 use crate::platform::instance::{INSTANCE_MUTEX, InstanceGuard};
 use crate::platform::{self, autostart, paths, wide};
 use crate::ui::icons;
+use crate::ui::lifecycle::{self, LifecycleEvent};
 use crate::{config, diagnostics};
 
 const WM_APP_TRAY: u32 = WM_APP + 1;
@@ -118,6 +127,7 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let power_notify = subscribe(hwnd);
     let target = SendHwnd(hwnd);
     let notify = Arc::new(move |n: Notice| target.post(WM_APP_NOTICE, n as usize));
     let grabbers: GrabberFactory =
@@ -173,6 +183,8 @@ pub fn run() -> ExitCode {
         suppress_next_up: false,
         exiting: false,
         shown: None,
+        power_notify,
+        finished: false,
     });
     let app = Box::into_raw(app);
     // SAFETY: the window lives on this thread; the pointer is reclaimed below.
@@ -236,6 +248,9 @@ struct TrayApp {
     exiting: bool,
     /// Icon and tooltip last shown; unchanged ones are not re-sent.
     shown: Option<(icons::IconKind, String)>,
+    power_notify: HPOWERNOTIFY,
+    /// `finish_exit` already ran.
+    finished: bool,
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -287,8 +302,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             0
         }
         WM_DESTROY => {
+            unsafe {
+                WTSUnRegisterSessionNotification(hwnd);
+                if app.power_notify != 0 {
+                    UnregisterPowerSettingNotification(app.power_notify);
+                }
+            }
             unsafe { PostQuitMessage(0) };
             0
+        }
+        WM_QUERYENDSESSION => 1,
+        WM_WTSSESSION_CHANGE | WM_POWERBROADCAST | WM_ENDSESSION => {
+            let display = if msg == WM_POWERBROADCAST && wp as u32 == PBT_POWERSETTINGCHANGE {
+                // SAFETY: lParam of a PBT_POWERSETTINGCHANGE broadcast.
+                unsafe { display_state(lp) }
+            } else {
+                None
+            };
+            if let Some(ev) = lifecycle::event(msg, wp, display) {
+                app.on_lifecycle(ev);
+            }
+            if msg == WM_POWERBROADCAST { 1 } else { 0 }
         }
         m if m == app.taskbar_created => {
             app.refresh_icon(true);
@@ -511,7 +545,31 @@ impl TrayApp {
         unsafe { SetTimer(self.hwnd, TIMER_EXIT, 2000, None) };
     }
 
+    fn on_lifecycle(&mut self, ev: LifecycleEvent) {
+        info!(?ev, "windows lifecycle event");
+        let Some(handle) = self.worker.as_ref().map(Worker::handle) else { return };
+        for cmd in ev.commands() {
+            match ev.wait() {
+                Some(t) => {
+                    if !handle.send_and_wait(cmd, t) {
+                        warn!(?ev, "the strip did not answer in time");
+                    }
+                }
+                None => {
+                    handle.send(cmd);
+                }
+            }
+        }
+        if ev == LifecycleEvent::EndSession {
+            self.exiting = true;
+            self.finish_exit();
+        }
+    }
+
     fn finish_exit(&mut self) {
+        if std::mem::replace(&mut self.finished, true) {
+            return;
+        }
         if let Some(mut child) = self.settings.take() {
             let _ = child.kill();
         }
@@ -529,6 +587,36 @@ impl TrayApp {
             DestroyWindow(self.hwnd);
         }
     }
+}
+
+/// Session (lock) and display state notifications for the hidden window.
+fn subscribe(hwnd: HWND) -> HPOWERNOTIFY {
+    // SAFETY: plain registrations for our own window.
+    unsafe {
+        if WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION) == 0 {
+            warn!("lock notifications unavailable");
+        }
+        let h = RegisterPowerSettingNotification(hwnd, &GUID_CONSOLE_DISPLAY_STATE, DEVICE_NOTIFY_WINDOW_HANDLE);
+        if h == 0 {
+            warn!("display state notifications unavailable");
+        }
+        h
+    }
+}
+
+/// The display state carried by a `PBT_POWERSETTINGCHANGE` broadcast, if it is one.
+///
+/// # Safety
+/// `lp` must be the lParam of a `WM_POWERBROADCAST` / `PBT_POWERSETTINGCHANGE` message.
+unsafe fn display_state(lp: LPARAM) -> Option<u32> {
+    let s = unsafe { &*(lp as *const POWERBROADCAST_SETTING) };
+    let (g, want) = (&s.PowerSetting, &GUID_CONSOLE_DISPLAY_STATE);
+    // windows-sys GUIDs have no PartialEq.
+    let same = g.data1 == want.data1 && g.data2 == want.data2 && g.data3 == want.data3 && g.data4 == want.data4;
+    if !same || s.DataLength < 4 {
+        return None;
+    }
+    Some(unsafe { std::ptr::read_unaligned(s.Data.as_ptr().cast::<u32>()) })
 }
 
 fn status_line(snap: &Snapshot, s: &Strings) -> String {
@@ -549,7 +637,9 @@ pub fn tooltip(snap: &Snapshot, s: &Strings) -> String {
         Connection::Ready => {
             let ip = snap.device.as_ref().map(|d| d.ip.to_string()).unwrap_or_default();
             let l = &snap.config.light;
-            if !l.power {
+            if !snap.dark.is_empty() {
+                format!("{} · {} · {ip}", s.mode_off, i18n::dark_reasons(s, &snap.dark))
+            } else if !l.power {
                 format!("{} · {ip}", s.mode_off)
             } else if snap.config.app.mode == Mode::Ambilight {
                 let mut parts = vec![s.mode_ambilight.to_owned(), format!("{} FPS", snap.config.ambilight.fps)];

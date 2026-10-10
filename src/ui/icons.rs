@@ -27,6 +27,7 @@ const ARCS: [Rgb; 4] = [RED, Rgb::new(0x3D, 0xB2, 0x5A), Rgb::new(0x3D, 0x7E, 0x
 
 pub fn kind_for(s: &Snapshot) -> IconKind {
     match s.connection {
+        Connection::Ready if !s.dark.is_empty() => IconKind::Off,
         Connection::Ready if s.config.light.power && s.config.app.mode == Mode::Ambilight => {
             IconKind::Ambilight { warn: s.stream.capture.as_ref().is_some_and(|c| !c.active && c.error.is_some()) }
         }

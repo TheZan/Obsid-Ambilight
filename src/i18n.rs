@@ -3,6 +3,7 @@
 //! Every string is a field of [`Strings`], so a missing translation is a
 //! compile error. Templates use `{}` placeholders filled by [`fill`].
 
+use crate::app::state::Dark;
 use crate::config::Language;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +43,18 @@ pub fn fill(template: &str, args: &[&str]) -> String {
     out
 }
 
+/// Why the strip is dark, e.g. "screen locked, display off"; empty when it is not.
+pub fn dark_reasons(s: &Strings, dark: &[Dark]) -> String {
+    dark.iter()
+        .map(|d| match d {
+            Dark::Sleep => s.dark_sleep,
+            Dark::Locked => s.dark_locked,
+            Dark::DisplayOff => s.dark_display,
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub struct Strings {
     // tray: status line and tooltip
     pub status_connected: &'static str,
@@ -52,6 +65,9 @@ pub struct Strings {
     pub mode_off: &'static str,
     pub mode_ambilight: &'static str,
     pub capture_unavailable: &'static str,
+    pub dark_sleep: &'static str,
+    pub dark_locked: &'static str,
+    pub dark_display: &'static str,
     // tray: menu
     pub power_off_item: &'static str,
     pub power_on_item: &'static str,
@@ -182,6 +198,9 @@ pub static RU: Strings = Strings {
     mode_off: "Выключено",
     mode_ambilight: "Ambilight",
     capture_unavailable: "захват недоступен",
+    dark_sleep: "сон",
+    dark_locked: "экран заблокирован",
+    dark_display: "экран выключен",
     power_off_item: "Выключить подсветку",
     power_on_item: "Включить подсветку",
     static_item: "Статика",
@@ -304,6 +323,9 @@ pub static EN: Strings = Strings {
     mode_off: "Off",
     mode_ambilight: "Ambilight",
     capture_unavailable: "capture unavailable",
+    dark_sleep: "sleep",
+    dark_locked: "screen locked",
+    dark_display: "display off",
     power_off_item: "Turn lighting off",
     power_on_item: "Turn lighting on",
     static_item: "Static",

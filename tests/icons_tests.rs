@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use obsid_ambilight::app::controller::Controller;
-use obsid_ambilight::app::state::{CaptureStatus, Connection};
+use obsid_ambilight::app::state::{CaptureStatus, Connection, Dark};
 use obsid_ambilight::config::{Config, Mode};
 use obsid_ambilight::protocol::Rgb;
 use obsid_ambilight::reconnect::Backoff;
@@ -97,5 +97,20 @@ fn icon_kind_shows_ambilight_and_unavailable_capture() {
     s.stream.capture = Some(CaptureStatus { active: false, error: Some("lost".into()), ..CaptureStatus::default() });
     assert_eq!(kind_for(&s), IconKind::Ambilight { warn: true });
     s.config.light.power = false;
+    assert_eq!(kind_for(&s), IconKind::Off);
+}
+
+#[test]
+fn a_dark_strip_shows_the_off_icon() {
+    let mut s = Controller::new(
+        Config::default(),
+        vec![],
+        Backoff::with_seed(Duration::from_secs(1), Duration::from_secs(1), None, 1),
+    )
+    .snapshot(false);
+    s.connection = Connection::Ready;
+    s.dark = vec![Dark::Locked];
+    assert_eq!(kind_for(&s), IconKind::Off);
+    s.config.app.mode = Mode::Ambilight;
     assert_eq!(kind_for(&s), IconKind::Off);
 }
