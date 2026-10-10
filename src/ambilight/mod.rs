@@ -5,3 +5,5 @@ pub mod color;
 pub mod image;
 pub mod layout;
 pub mod letterbox;
+pub mod pipeline;
+pub mod smooth;
