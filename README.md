@@ -45,16 +45,18 @@ Everything runs on your local network. You don't need a cloud account or a brows
 
 ## Installation
 
-There is no installer. Build the app from source with
-[Rust](https://rustup.rs) 1.95 or newer:
+Download `ObsidAmbilight-Setup-x.y.z.exe` from
+[Releases](https://github.com/TheZan/Obsid-Ambilight/releases/latest) and run
+it. It installs for your Windows account only and does not ask for administrator
+rights.
 
-```bash
-cargo build --release
-```
+The installer is not digitally signed, so Windows SmartScreen may warn about an
+unknown publisher. Click **More info → Run anyway**.
 
-Copy `target/release/obsid-ambilight.exe` to any folder and run it. The app
-registers that exe path for autostart, so keep the exe where you put it. If you
-move it, start it once from the new place and the autostart entry is updated.
+To update, run the installer of the new version. It closes the running app,
+replaces it and starts it again; your settings and strip layout stay. To remove
+the app, use **Settings → Apps → Installed apps**; it asks whether to delete the
+settings as well.
 
 ## First run
 
@@ -196,6 +198,13 @@ the app overrides them.
 
 ## For developers
 
+Build from source with [Rust](https://rustup.rs) 1.95 or newer:
+
+```bash
+cargo build --release                         # target/release/obsid-ambilight.exe
+iscc installer/obsid-ambilight.iss            # target/installer/ObsidAmbilight-Setup-<version>.exe (Inno Setup 6)
+```
+
 ```bash
 cargo test                                    # unit and integration tests, no strip needed
 cargo clippy --all-targets -- -D warnings
@@ -207,6 +216,10 @@ Run `obsid-poc help` for the commands.
 
 - Protocol notes: [docs/protocol.md](docs/protocol.md).
 - Hardware test checklist: [docs/testing.md](docs/testing.md).
+
+To release a version: set `version` in `Cargo.toml`, commit, then push a tag
+`vX.Y.Z` with the same number. GitHub Actions checks the code, builds the
+installer and publishes it on the Releases page.
 
 ```text
 src/
