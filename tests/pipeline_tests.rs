@@ -122,3 +122,19 @@ fn a_new_frame_size_resets_letterbox_state() {
     p.process(&Image::filled(120, 68, [0.5; 3]), &s, t0 + HOLD * 2);
     assert_eq!(p.bars(), Bars::default());
 }
+
+#[test]
+fn an_inner_loop_shows_the_edge_it_faces() {
+    // Red along the top edge, blue everywhere else.
+    let mut img = Image::filled(160, 90, [0.0, 0.0, 1.0]);
+    for y in 0..10 {
+        for x in 0..160 {
+            img.set(x, y, [1.0, 0.0, 0.0]);
+        }
+    }
+    let mut s = settings();
+    s.led_count = 3;
+    s.segments = vec![Segment { from: 0, to: 2, start: [0.25, 0.4], end: [0.9, 0.4] }];
+    let out = Pipeline::new().process(&img, &s, Instant::now());
+    assert_eq!(out, vec![Rgb::new(255, 0, 0); 3], "colour from the top edge, not from the middle");
+}

@@ -136,6 +136,35 @@ pub fn led_points(segments: &[Segment], led_count: usize) -> Vec<Option<[f64; 2]
     out
 }
 
+/// Screen point each LED takes its colour from: its place on the segment,
+/// moved straight to the screen edge the segment faces. Horizontal runs go to
+/// the top or bottom edge, vertical ones to the left or right edge, whichever
+/// is nearer, so a loop glued inside the back of the monitor still shows the
+/// edge colours while the editor draws it where it really lies.
+pub fn sample_points(segments: &[Segment], led_count: usize) -> Vec<Option<[f64; 2]>> {
+    let mut out = vec![None; led_count];
+    for s in segments {
+        for (k, led) in s.leds().into_iter().enumerate() {
+            if let Some(slot) = out.get_mut(led) {
+                *slot = Some(s.to_edge(s.point(k)));
+            }
+        }
+    }
+    out
+}
+
+impl Segment {
+    /// Moves `p` to the edge this segment faces (see [`sample_points`]).
+    fn to_edge(&self, p: [f64; 2]) -> [f64; 2] {
+        let (dx, dy) = ((self.end[0] - self.start[0]).abs(), (self.end[1] - self.start[1]).abs());
+        let mid = [(self.start[0] + self.end[0]) / 2.0, (self.start[1] + self.end[1]) / 2.0];
+        // A point or an exact diagonal faces whichever edge is nearer.
+        let horizontal = if dx == dy { (mid[1] - 0.5).abs() >= (mid[0] - 0.5).abs() } else { dx > dy };
+        let side = |v: f64| if v < 0.5 { 0.0 } else { 1.0 };
+        if horizontal { [p[0], side(mid[1])] } else { [side(mid[0]), p[1]] }
+    }
+}
+
 /// Four sides from LED 0, clockwise seen from the front: left (bottom → top),
 /// top (left → right), right (top → bottom), bottom (right → left).
 pub fn perimeter(counts: [usize; 4]) -> Vec<Segment> {

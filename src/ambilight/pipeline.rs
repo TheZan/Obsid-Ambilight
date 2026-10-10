@@ -64,7 +64,7 @@ impl Pipeline {
             self.letterbox.reset();
             img.full()
         };
-        let targets: Vec<Color> = layout::led_points(&s.segments, s.led_count)
+        let targets: Vec<Color> = layout::sample_points(&s.segments, s.led_count)
             .into_iter()
             .map(|p| match p {
                 Some(p) => color::adjust(img.mean(Image::sample_rect(area, p, s.depth)), &s.adjust),

@@ -1,6 +1,6 @@
 use obsid_ambilight::ambilight::layout::{
     self, EDGE_INSET, HighlightTarget, MAX_SEGMENTS, SegmentError, default_counts, highlight_frame, led_points,
-    perimeter, sanitize, trim,
+    perimeter, sample_points, sanitize, trim,
 };
 use obsid_ambilight::config::Segment;
 use obsid_ambilight::protocol::Rgb;
@@ -142,4 +142,25 @@ fn segment_highlight_is_a_green_to_blue_gradient() {
     assert_eq!(f[5], Rgb::new(0, 0, 255), "`to` is blue");
     assert_eq!(f[0], Rgb::BLACK, "other segments are dark");
     assert_eq!(highlight_frame(HighlightTarget::Segment(7), &segs, 12), vec![Rgb::BLACK; 12]);
+}
+
+#[test]
+fn colours_come_from_the_edge_each_segment_faces() {
+    let inner_top = seg(48, 59, [0.25, 0.4], [0.9, 0.4]);
+    let inner_side = seg(43, 47, [0.3, 0.9], [0.28, 0.42]);
+    let low = seg(20, 21, [0.2, 0.7], [0.8, 0.7]);
+    let right = seg(30, 31, [0.6, 0.2], [0.6, 0.8]);
+    let points = sample_points(&[inner_top.clone(), inner_side.clone(), low, right], 60);
+    let physical = led_points(&[inner_top, inner_side], 60);
+    assert_eq!(points[50].unwrap(), [physical[50].unwrap()[0], 0.0], "horizontal near the top → top edge");
+    assert_eq!(points[45].unwrap(), [0.0, physical[45].unwrap()[1]], "vertical near the left → left edge");
+    assert_eq!(points[20].unwrap()[1], 1.0, "horizontal in the lower half → bottom edge");
+    assert_eq!(points[30].unwrap()[0], 1.0, "vertical in the right half → right edge");
+    assert!(points[0].is_none(), "LEDs outside every segment take no colour");
+}
+
+#[test]
+fn a_single_point_goes_to_its_nearest_edge() {
+    assert_eq!(sample_points(&[seg(0, 0, [0.3, 0.9], [0.3, 0.9])], 1), vec![Some([0.3, 1.0])]);
+    assert_eq!(sample_points(&[seg(0, 0, [0.1, 0.6], [0.1, 0.6])], 1), vec![Some([0.0, 0.6])]);
 }
