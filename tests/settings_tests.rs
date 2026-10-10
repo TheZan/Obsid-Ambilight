@@ -103,7 +103,7 @@ mod layout_editor {
     use eframe::egui::{Rect, pos2, vec2};
     use obsid_ambilight::config::Segment;
     use obsid_ambilight::ui::settings::layout_editor::{
-        fit, free_range, from_screen, snap_point, to_screen, unused_count,
+        connectors, fit, free_range, from_screen, label_pos, snap_end, snap_point, to_screen, unused_count,
     };
 
     fn seg(from: usize, to: usize) -> Segment {
@@ -138,5 +138,39 @@ mod layout_editor {
         assert_eq!(free_range(&[seg(0, 9), seg(20, 15)], 60), Some((10, 14)));
         assert_eq!(free_range(&[seg(0, 59)], 60), None);
         assert_eq!(unused_count(&[seg(0, 9), seg(20, 15)], 60), 44);
+    }
+
+    #[test]
+    fn a_dragged_end_sticks_to_a_nearby_end() {
+        let others = [[0.3, 0.98], [0.9, 0.4]];
+        assert_eq!(snap_end([0.31, 0.96], &others), [0.3, 0.98], "joins the closer end");
+        assert_eq!(snap_end([0.5, 0.5], &others), [0.5, 0.5], "nothing near: grid rules apply");
+        assert_eq!(snap_end([0.512, 0.5], &others), [0.5, 0.5]);
+    }
+
+    #[test]
+    fn connectors_follow_the_strip_between_segments() {
+        let segs = [
+            Segment { from: 33, to: 42, start: [0.98, 0.98], end: [0.3, 0.98] },
+            Segment { from: 43, to: 47, start: [0.28, 0.92], end: [0.28, 0.42] },
+            Segment { from: 59, to: 48, start: [0.9, 0.4], end: [0.28, 0.4] },
+            Segment { from: 0, to: 9, start: [0.02, 0.98], end: [0.02, 0.02] },
+        ];
+        let c = connectors(&segs);
+        assert!(c.contains(&([0.3, 0.98], [0.28, 0.92])), "42 -> 43: {c:?}");
+        assert!(c.contains(&([0.28, 0.42], [0.28, 0.4])), "47 -> 48 at the end of a reversed segment: {c:?}");
+        assert_eq!(c.len(), 2, "no link from 9: LED 10 is in no segment");
+    }
+
+    #[test]
+    fn labels_stay_inside_and_apart_at_a_corner() {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 225.0));
+        let corner = pos2(0.0, 0.0);
+        let down = label_pos(screen, corner, pos2(0.0, 225.0));
+        let right = label_pos(screen, corner, pos2(400.0, 0.0));
+        for p in [down, right] {
+            assert!(screen.shrink(4.0).contains(p), "{p:?}");
+        }
+        assert!((down - right).length() > 10.0, "{down:?} vs {right:?}");
     }
 }

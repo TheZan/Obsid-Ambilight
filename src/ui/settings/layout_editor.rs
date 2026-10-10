@@ -16,6 +16,8 @@ use crate::i18n::{self, Strings};
 const GRID_STEPS: f64 = 20.0;
 /// A dragged end snaps to a grid line closer than this.
 pub const SNAP_DISTANCE: f64 = 0.015;
+/// A dragged end joins another segment's end closer than this.
+pub const JOIN_DISTANCE: f64 = 0.03;
 /// Highlights are repeated this often while shown; the worker drops them after 3 s.
 const RESEND: Duration = Duration::from_secs(1);
 /// Local edits win over the snapshot for this long.
@@ -40,6 +42,43 @@ pub fn snap_point(p: [f64; 2]) -> [f64; 2] {
         let g = (v * GRID_STEPS).round() / GRID_STEPS;
         if (v - g).abs() <= SNAP_DISTANCE { g } else { v }
     })
+}
+
+fn distance(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+/// Where a dragged end lands: on the nearest other end within
+/// [`JOIN_DISTANCE`] (so the strip path stays joined), otherwise on the grid.
+pub fn snap_end(p: [f64; 2], others: &[[f64; 2]]) -> [f64; 2] {
+    let p = p.map(|v| v.clamp(0.0, 1.0));
+    others
+        .iter()
+        .copied()
+        .filter(|o| distance(*o, p) <= JOIN_DISTANCE)
+        .min_by(|a, b| distance(*a, p).total_cmp(&distance(*b, p)))
+        .unwrap_or_else(|| snap_point(p))
+}
+
+/// Where the strip runs on from one segment to the next: from the point of a
+/// segment's highest LED to the point of the next LED's segment.
+pub fn connectors(segments: &[Segment]) -> Vec<([f64; 2], [f64; 2])> {
+    let at = |s: &Segment, led: usize| if s.from == led { s.start } else { s.end };
+    segments
+        .iter()
+        .filter_map(|a| {
+            let b = segments.iter().find(|b| b.lo() == a.hi() + 1)?;
+            Some((at(a, a.hi()), at(b, b.lo())))
+        })
+        .collect()
+}
+
+/// Where to write the LED number of the end `at`: a little along its segment
+/// (toward `toward`) and toward the screen centre, inside the schematic.
+pub fn label_pos(screen: Rect, at: Pos2, toward: Pos2) -> Pos2 {
+    let p = at + (toward - at).normalized() * 14.0 + (screen.center() - at).normalized() * 9.0;
+    let inner = screen.shrink(10.0);
+    pos2(p.x.clamp(inner.left(), inner.right()), p.y.clamp(inner.top(), inner.bottom()))
 }
 
 pub fn to_screen(rect: Rect, p: [f64; 2]) -> Pos2 {
@@ -142,14 +181,21 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, backend: &Backend, 
     let (response, painter) = ui.allocate_painter(vec2(width, width * 0.6), Sense::hover());
     let screen = fit(response.rect.shrink(14.0), aspect);
     painter.rect_stroke(screen, 4.0, Stroke::new(1.5, ui.visuals().text_color()), StrokeKind::Middle);
+    let faint = ui.visuals().weak_text_color();
+    for (a, b) in connectors(&segs) {
+        let (a, b) = (to_screen(screen, a), to_screen(screen, b));
+        painter.extend(egui::Shape::dashed_line(&[a, b], Stroke::new(1.5, faint), 4.0, 3.0));
+    }
+    let ends: Vec<(usize, [f64; 2])> = segs.iter().enumerate().flat_map(|(i, s)| [(i, s.start), (i, s.end)]).collect();
     for (i, seg) in segs.iter_mut().enumerate() {
         let color = PALETTE[i % PALETTE.len()];
         let w = if edit.selected == Some(i) { 4.0 } else { 2.5 };
         let (a, b) = (to_screen(screen, seg.start), to_screen(screen, seg.end));
         painter.line_segment([a, b], Stroke::new(w, color));
         painter.arrow(a + (b - a) * 0.4, (b - a) * 0.2, Stroke::new(w, color));
-        painter.text(a, Align2::RIGHT_BOTTOM, seg.from.to_string(), FontId::proportional(11.0), color);
-        painter.text(b, Align2::LEFT_TOP, seg.to.to_string(), FontId::proportional(11.0), color);
+        let font = FontId::proportional(11.0);
+        painter.text(label_pos(screen, a, b), Align2::CENTER_CENTER, seg.from.to_string(), font.clone(), color);
+        painter.text(label_pos(screen, b, a), Align2::CENTER_CENTER, seg.to.to_string(), font, color);
         for (which, end) in [&mut seg.start, &mut seg.end].into_iter().enumerate() {
             let pos = to_screen(screen, *end);
             let id = ui.id().with(("segment-end", i, which));
@@ -157,7 +203,8 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, backend: &Backend, 
             if r.dragged()
                 && let Some(p) = r.interact_pointer_pos()
             {
-                *end = snap_point(from_screen(screen, p));
+                let others: Vec<[f64; 2]> = ends.iter().filter(|(j, _)| *j != i).map(|(_, e)| *e).collect();
+                *end = snap_end(from_screen(screen, p), &others);
                 edit.selected = Some(i);
             }
             painter.circle_filled(pos, if r.hovered() || r.dragged() { 6.0 } else { 4.0 }, color);
