@@ -83,6 +83,37 @@ impl Tab {
     }
 }
 
+/// Screen capture as seen by the background process.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CaptureStatus {
+    /// Output being captured (differs from the setting after a fallback).
+    pub monitor: String,
+    pub adapter: String,
+    pub width: u32,
+    pub height: u32,
+    pub hdr: bool,
+    pub sdr_white_nits: f32,
+    /// Frames processed per second.
+    pub fps: f32,
+    /// Black bars as shares of the height (top = bottom) and width (left = right).
+    pub bars: [f32; 2],
+    /// Last problem; with `active == false` capture is unavailable.
+    pub error: Option<String>,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct StreamStatus {
+    /// The strip is in direct mode and receives frames.
+    pub streaming: bool,
+    /// The layout editor overlay is shown instead of the screen.
+    pub highlight: bool,
+    /// Frames actually sent per second.
+    pub send_fps: f32,
+    /// `None` while capture is not running.
+    pub capture: Option<CaptureStatus>,
+}
+
 /// Everything the UI shows, published by the worker after every change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -100,4 +131,5 @@ pub struct Snapshot {
     pub errors: Vec<String>,
     pub config_warnings: Vec<String>,
     pub config: Config,
+    pub stream: StreamStatus,
 }

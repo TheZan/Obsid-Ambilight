@@ -1,12 +1,13 @@
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
+use obsid_ambilight::ambilight::layout::HighlightTarget;
 use obsid_ambilight::app::commands::{Command, coalesce};
 use obsid_ambilight::app::controller::{
-    Action, Controller, Event, LightChange, MAX_ERRORS, RETRY_BASE, Resolved, Target,
+    Action, Controller, Event, HIGHLIGHT_TTL, LightChange, MAX_ERRORS, RETRY_BASE, Resolved, Target,
 };
 use obsid_ambilight::app::state::{Connection, DeviceInfo, TestState};
-use obsid_ambilight::config::{Config, ExitAction};
+use obsid_ambilight::config::{AmbilightConfig, Config, ExitAction, Mode, Segment};
 use obsid_ambilight::protocol::Rgb;
 use obsid_ambilight::reconnect::Backoff;
 
@@ -270,17 +271,26 @@ fn connection_test_without_strip_fails_immediately() {
 #[test]
 fn exit_powers_off_only_when_asked_and_connected() {
     let (mut c, now) = ready();
-    assert_eq!(c.handle(Event::Command(Command::Exit), now), vec![Action::Shutdown { power_off_ip: None }]);
+    assert_eq!(
+        c.handle(Event::Command(Command::Exit), now),
+        vec![Action::Shutdown { power_off_ip: None, stop_stream: None }]
+    );
 
     let (mut c, now) = ready();
     c.handle(Event::Command(Command::SetExitAction { action: ExitAction::Off }), now);
-    assert_eq!(c.handle(Event::Command(Command::Exit), now), vec![Action::Shutdown { power_off_ip: Some(IP) }]);
+    assert_eq!(
+        c.handle(Event::Command(Command::Exit), now),
+        vec![Action::Shutdown { power_off_ip: Some(IP), stop_stream: None }]
+    );
 
     let mut c = ctrl(saved_cfg());
     c.handle(Event::Command(Command::SetExitAction { action: ExitAction::Off }), now);
     c.handle(Event::Startup, now);
     c.handle(Event::Resolved(Err("x".into())), now);
-    assert_eq!(c.handle(Event::Command(Command::Exit), now), vec![Action::Shutdown { power_off_ip: None }]);
+    assert_eq!(
+        c.handle(Event::Command(Command::Exit), now),
+        vec![Action::Shutdown { power_off_ip: None, stop_stream: None }]
+    );
 }
 
 #[test]
@@ -379,4 +389,258 @@ fn backoff_keeps_growing_when_strip_is_found_but_commands_fail() {
     c.handle(Event::Applied(Err("timeout".into())), t2);
     let third = c.next_deadline().unwrap() - t2;
     assert!(third <= Duration::from_secs(2), "reset after success: {third:?}");
+}
+
+// ---------- Ambilight ----------
+
+fn ambilight_cfg() -> Config {
+    let mut c = saved_cfg();
+    c.app.mode = Mode::Ambilight;
+    c
+}
+
+fn found(c: &mut Controller, at: Instant) -> Vec<Action> {
+    c.handle(Event::Resolved(Ok(Resolved { device: dev("dcda0cd778bc", IP), verified: true })), at)
+}
+
+/// Started in Ambilight mode, connected, stream running.
+fn streaming() -> (Controller, Instant) {
+    let now = Instant::now();
+    let mut c = ctrl(ambilight_cfg());
+    c.handle(Event::Startup, now);
+    assert_eq!(found(&mut c, now), vec![Action::StartStream { ip: IP }]);
+    c.handle(Event::StreamStarted(Ok(())), now);
+    (c, now)
+}
+
+#[test]
+fn ambilight_mode_streams_after_connecting() {
+    let (c, _) = streaming();
+    assert!(c.streaming());
+    assert!(c.capture_wanted());
+    let s = c.snapshot(true);
+    assert!(s.stream.streaming);
+    assert!(!s.stream.highlight);
+}
+
+#[test]
+fn switching_modes_enters_and_leaves_direct_mode() {
+    let (mut c, now) = ready();
+    let a = c.handle(Event::Command(Command::SetMode { mode: Mode::Ambilight }), now);
+    assert_eq!(a, vec![Action::SaveConfig, Action::StartStream { ip: IP }]);
+    c.handle(Event::StreamStarted(Ok(())), now);
+    assert!(c.capture_wanted());
+
+    let a = c.handle(Event::Command(Command::SetStatic { color: Some(Rgb::new(1, 2, 3)), brightness: None }), now);
+    assert_eq!(c.config().app.mode, Mode::Static, "a static colour leaves Ambilight");
+    assert_eq!(a, vec![Action::SaveConfig, Action::StopStream { ip: IP, then: full_on(c.config()) }]);
+    assert!(!c.capture_wanted());
+    c.handle(Event::StreamStopped(IP, Ok(())), now);
+
+    c.handle(Event::Command(Command::SetMode { mode: Mode::Ambilight }), now);
+    c.handle(Event::StreamStarted(Ok(())), now);
+    let a = c.handle(Event::Command(Command::SetPower { on: false }), now);
+    assert_eq!(a, vec![Action::SaveConfig, Action::StopStream { ip: IP, then: LightChange::off() }]);
+    let a = c.handle(Event::Command(Command::SetPower { on: true }), now);
+    assert_eq!(a, vec![Action::SaveConfig, Action::StartStream { ip: IP }], "power on resumes the chosen mode");
+}
+
+#[test]
+fn choosing_a_mode_turns_the_strip_on() {
+    let (mut c, now) = ready();
+    c.handle(Event::Command(Command::SetPower { on: false }), now);
+    c.handle(Event::Command(Command::SetMode { mode: Mode::Static }), now);
+    assert!(c.config().light.power);
+}
+
+#[test]
+fn ambilight_is_not_started_without_power_on_start() {
+    let mut cfg = ambilight_cfg();
+    cfg.startup.power_on = false;
+    cfg.light.power = false;
+    let now = Instant::now();
+    let mut c = ctrl(cfg);
+    c.handle(Event::Startup, now);
+    assert!(found(&mut c, now).is_empty());
+    assert!(!c.streaming());
+}
+
+#[test]
+fn stream_failure_resumes_ambilight_after_reconnect() {
+    let (mut c, now) = streaming();
+    c.handle(Event::StreamFailed("keep-alive lost".into()), now);
+    assert_eq!(c.snapshot(false).connection, Connection::Offline);
+    assert!(!c.streaming());
+    assert!(!c.capture_wanted());
+    let at = c.next_deadline().unwrap();
+    assert!(matches!(c.handle(Event::Tick, at).as_slice(), [Action::Resolve(_)]));
+    assert_eq!(found(&mut c, at), vec![Action::StartStream { ip: IP }]);
+}
+
+#[test]
+fn a_failed_stream_start_goes_offline_and_retries() {
+    let now = Instant::now();
+    let mut c = ctrl(ambilight_cfg());
+    c.handle(Event::Startup, now);
+    found(&mut c, now);
+    c.handle(Event::StreamStarted(Err("timeout".into())), now);
+    assert_eq!(c.snapshot(false).connection, Connection::Offline);
+    assert!(!c.streaming());
+    let at = c.next_deadline().unwrap();
+    c.handle(Event::Tick, at);
+    assert_eq!(found(&mut c, at), vec![Action::StartStream { ip: IP }]);
+}
+
+#[test]
+fn a_failed_stream_stop_retries_the_static_state() {
+    let (mut c, now) = streaming();
+    c.handle(Event::Command(Command::SetMode { mode: Mode::Static }), now);
+    c.handle(Event::StreamStopped(IP, Err("timeout".into())), now);
+    assert_eq!(c.snapshot(false).connection, Connection::Offline);
+    let at = c.next_deadline().unwrap();
+    c.handle(Event::Tick, at);
+    assert_eq!(found(&mut c, at), vec![Action::Apply { ip: IP, change: full_on(c.config()) }]);
+}
+
+#[test]
+fn highlight_from_static_starts_and_ends_the_stream() {
+    let (mut c, now) = ready();
+    let a = c.handle(Event::Command(Command::Highlight { target: HighlightTarget::Led(3) }), now);
+    assert_eq!(a, vec![Action::StartStream { ip: IP }]);
+    c.handle(Event::StreamStarted(Ok(())), now);
+    assert_eq!(c.highlight(), Some(HighlightTarget::Led(3)));
+    assert!(!c.capture_wanted(), "static mode needs no capture");
+    assert_eq!(c.next_deadline(), Some(now + HIGHLIGHT_TTL));
+    assert!(c.snapshot(true).stream.highlight);
+
+    let t1 = now + Duration::from_secs(2);
+    let a = c.handle(Event::Command(Command::Highlight { target: HighlightTarget::Led(4) }), t1);
+    assert!(a.is_empty(), "already streaming: {a:?}");
+    assert!(c.handle(Event::Tick, now + HIGHLIGHT_TTL).is_empty(), "renewed at t1");
+    let a = c.handle(Event::Tick, t1 + HIGHLIGHT_TTL);
+    assert_eq!(a, vec![Action::StopStream { ip: IP, then: full_on(c.config()) }]);
+    assert_eq!(c.highlight(), None);
+    assert!(!c.streaming());
+}
+
+#[test]
+fn highlight_in_ambilight_keeps_the_stream() {
+    let (mut c, now) = streaming();
+    let a = c.handle(Event::Command(Command::Highlight { target: HighlightTarget::Segment(0) }), now);
+    assert!(a.is_empty(), "{a:?}");
+    assert!(c.capture_wanted(), "capture keeps running under the overlay");
+    assert!(c.handle(Event::Command(Command::StopHighlight), now).is_empty());
+    assert!(c.streaming());
+}
+
+#[test]
+fn changes_during_a_highlight_wait_for_its_end() {
+    let (mut c, now) = ready();
+    c.handle(Event::Command(Command::Highlight { target: HighlightTarget::Led(0) }), now);
+    c.handle(Event::StreamStarted(Ok(())), now);
+    let a = c.handle(Event::Command(Command::SetStatic { color: Some(Rgb::new(7, 7, 7)), brightness: None }), now);
+    assert_eq!(a, vec![Action::SaveConfig]);
+    let a = c.handle(Event::Command(Command::StopHighlight), now);
+    assert_eq!(a, vec![Action::StopStream { ip: IP, then: full_on(c.config()) }]);
+    assert_eq!(c.config().light.color, Rgb::new(7, 7, 7));
+}
+
+#[test]
+fn highlight_needs_a_connected_strip_and_a_real_target() {
+    let mut c = ctrl(saved_cfg());
+    assert!(
+        c.handle(Event::Command(Command::Highlight { target: HighlightTarget::Led(0) }), Instant::now()).is_empty()
+    );
+    assert_eq!(c.snapshot(false).errors.len(), 1);
+
+    let (mut c, now) = ready();
+    assert!(c.handle(Event::Command(Command::Highlight { target: HighlightTarget::Led(60) }), now).is_empty());
+    assert!(c.handle(Event::Command(Command::Highlight { target: HighlightTarget::Segment(99) }), now).is_empty());
+    assert_eq!(c.snapshot(false).errors.len(), 2);
+    assert!(!c.streaming());
+}
+
+#[test]
+fn exit_from_a_stream_leaves_direct_mode() {
+    let (mut c, now) = streaming();
+    let full = full_on(c.config());
+    assert_eq!(
+        c.handle(Event::Command(Command::Exit), now),
+        vec![Action::Shutdown { power_off_ip: None, stop_stream: Some((IP, full)) }]
+    );
+    let (mut c, now) = streaming();
+    c.handle(Event::Command(Command::SetExitAction { action: ExitAction::Off }), now);
+    assert_eq!(
+        c.handle(Event::Command(Command::Exit), now),
+        vec![Action::Shutdown { power_off_ip: None, stop_stream: Some((IP, LightChange::off())) }]
+    );
+}
+
+#[test]
+fn ambilight_settings_are_checked_and_keep_the_segments() {
+    let (mut c, now) = ready();
+    let before = c.config().clone();
+    let bad = AmbilightConfig { fps: 5, ..before.ambilight.clone() };
+    assert!(c.handle(Event::Command(Command::SetAmbilight { settings: bad }), now).is_empty());
+    assert_eq!(c.config(), &before);
+    let good = AmbilightConfig { fps: 30, segments: Vec::new(), ..before.ambilight.clone() };
+    assert_eq!(c.handle(Event::Command(Command::SetAmbilight { settings: good }), now), vec![Action::SaveConfig]);
+    assert_eq!(c.config().ambilight.fps, 30);
+    assert_eq!(c.config().ambilight.segments, before.ambilight.segments, "segments change only via SetLayout");
+}
+
+#[test]
+fn layout_is_sanitized() {
+    let (mut c, now) = ready();
+    let segs = vec![
+        Segment { from: 0, to: 9, start: [0.0, 0.0], end: [1.0, 0.0] },
+        Segment { from: 5, to: 15, start: [0.0, 1.0], end: [1.0, 1.0] },
+    ];
+    assert_eq!(c.handle(Event::Command(Command::SetLayout { segments: segs.clone() }), now), vec![Action::SaveConfig]);
+    assert_eq!(c.config().ambilight.segments, segs[..1]);
+    assert_eq!(c.snapshot(false).errors.len(), 1);
+}
+
+#[test]
+fn a_smaller_led_count_trims_the_layout() {
+    let (mut c, now) = ready();
+    c.handle(Event::Command(Command::SetLedCount { count: 30 }), now);
+    assert!(!c.config().ambilight.segments.is_empty());
+    assert!(c.config().ambilight.segments.iter().all(|s| s.hi() < 30));
+}
+
+#[test]
+fn selecting_another_strip_stops_the_stream_on_the_old_one() {
+    let (mut c, now) = streaming();
+    let other = Ipv4Addr::new(192, 168, 1, 99);
+    c.handle(Event::Command(Command::Discover), now);
+    c.handle(Event::Discovered(Ok(vec![dev("dcda0cd778bc", IP), dev("other", other)])), now);
+    let a = c.handle(Event::Command(Command::SelectDevice { id: "other".into() }), now);
+    assert_eq!(a.first(), Some(&Action::StopStream { ip: IP, then: full_on(c.config()) }));
+    assert!(a.contains(&Action::StartStream { ip: other }), "{a:?}");
+    c.handle(Event::StreamStopped(IP, Err("timeout".into())), now);
+    assert_eq!(c.snapshot(false).connection, Connection::Ready, "the old strip's failure does not matter");
+}
+
+#[test]
+fn coalesce_keeps_the_last_of_ambilight_runs() {
+    let a = AmbilightConfig::defaults(60);
+    let b = AmbilightConfig { fps: 30, ..a.clone() };
+    let seg = Segment { from: 0, to: 1, start: [0.0, 0.0], end: [1.0, 0.0] };
+    let out = coalesce(vec![
+        Command::SetAmbilight { settings: a },
+        Command::SetAmbilight { settings: b.clone() },
+        Command::SetLayout { segments: vec![] },
+        Command::SetLayout { segments: vec![seg.clone()] },
+        Command::Highlight { target: HighlightTarget::Led(1) },
+        Command::Highlight { target: HighlightTarget::Led(2) },
+    ]);
+    assert_eq!(
+        out,
+        vec![
+            Command::SetAmbilight { settings: b },
+            Command::SetLayout { segments: vec![seg] },
+            Command::Highlight { target: HighlightTarget::Led(2) },
+        ]
+    );
 }

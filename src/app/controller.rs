@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use super::commands::Command;
-use super::state::{Connection, DeviceInfo, Snapshot, TestState};
-use crate::config::{self, Config, ExitAction, LightConfig};
+use super::state::{Connection, DeviceInfo, Snapshot, StreamStatus, TestState};
+use crate::ambilight::layout::{self, HighlightTarget};
+use crate::config::{self, AmbilightConfig, Config, ExitAction, LightConfig, Mode};
 use crate::protocol::Rgb;
 use crate::protocol::packets::MAX_LEDS;
 use crate::reconnect::Backoff;
@@ -18,6 +19,8 @@ use crate::reconnect::Backoff;
 pub const MAX_ERRORS: usize = 20;
 pub const RETRY_BASE: Duration = Duration::from_secs(2);
 pub const RETRY_MAX: Duration = Duration::from_secs(300);
+/// A layout highlight ends this long after the last `Highlight` command.
+pub const HIGHLIGHT_TTL: Duration = Duration::from_secs(3);
 
 /// Commands to send to the strip, in order: power, colour, brightness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +31,7 @@ pub struct LightChange {
 }
 
 impl LightChange {
-    /// The full user state: on + colour + brightness, or just off.
+    /// The full static state: on + colour + brightness, or just off.
     pub fn full(light: &LightConfig) -> Self {
         if light.power {
             Self { power: Some(true), color: Some(light.color), brightness: Some(light.brightness) }
@@ -40,6 +43,15 @@ impl LightChange {
     pub fn off() -> Self {
         Self { power: Some(false), color: None, brightness: None }
     }
+}
+
+/// What the strip should show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Desired {
+    /// Static colour or off, sent as plain commands.
+    Light(LightChange),
+    /// Screen colours streamed in direct mode.
+    Ambilight,
 }
 
 /// How to find the strip.
@@ -65,7 +77,13 @@ pub enum Event {
     Discovered(Result<Vec<DeviceInfo>, String>),
     Applied(Result<(), String>),
     Tested(Result<Duration, String>),
-    /// Time has passed; lets due retries fire.
+    /// Result of `Action::StartStream`.
+    StreamStarted(Result<(), String>),
+    /// Result of `Action::StopStream` on the strip at this address.
+    StreamStopped(Ipv4Addr, Result<(), String>),
+    /// The running stream lost its session.
+    StreamFailed(String),
+    /// Time has passed; lets due retries and highlight expiry fire.
     Tick,
 }
 
@@ -73,11 +91,30 @@ pub enum Event {
 pub enum Action {
     Resolve(Target),
     Discover,
-    Apply { ip: Ipv4Addr, change: LightChange },
-    Test { ip: Ipv4Addr },
+    Apply {
+        ip: Ipv4Addr,
+        change: LightChange,
+    },
+    /// Enter direct mode; the worker sends frames until `StopStream`.
+    StartStream {
+        ip: Ipv4Addr,
+    },
+    /// Leave direct mode, then send `then`.
+    StopStream {
+        ip: Ipv4Addr,
+        then: LightChange,
+    },
+    Test {
+        ip: Ipv4Addr,
+    },
     SaveConfig,
     OpenSettings,
-    Shutdown { power_off_ip: Option<Ipv4Addr> },
+    /// `stop_stream` leaves direct mode with short timeouts and applies its
+    /// change; `power_off_ip` switches off a strip that is not streaming.
+    Shutdown {
+        power_off_ip: Option<Ipv4Addr>,
+        stop_stream: Option<(Ipv4Addr, LightChange)>,
+    },
 }
 
 pub struct Controller {
@@ -89,14 +126,18 @@ pub struct Controller {
     searching: bool,
     /// First run: select the strip automatically if discovery finds exactly one.
     auto_select: bool,
-    /// Change to send once the strip is reachable.
-    pending: Option<LightChange>,
+    /// State to reach once the strip is reachable.
+    pending: Option<Desired>,
     retry_at: Option<Instant>,
     retry_in_secs: Option<u64>,
     backoff: Backoff,
     test: TestState,
     errors: VecDeque<String>,
     config_warnings: Vec<String>,
+    /// Direct mode is on (or `StartStream` was just issued).
+    streaming: bool,
+    /// Layout editor overlay and when it expires.
+    highlight: Option<(HighlightTarget, Instant)>,
 }
 
 impl Controller {
@@ -116,6 +157,8 @@ impl Controller {
             test: TestState::Idle,
             errors: VecDeque::new(),
             config_warnings,
+            streaming: false,
+            highlight: None,
         }
     }
 
@@ -125,7 +168,21 @@ impl Controller {
 
     /// When the controller next needs a `Tick`.
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.retry_at
+        [self.retry_at, self.highlight.map(|(_, until)| until)].into_iter().flatten().min()
+    }
+
+    pub fn streaming(&self) -> bool {
+        self.streaming
+    }
+
+    /// The layout overlay to send instead of screen colours.
+    pub fn highlight(&self) -> Option<HighlightTarget> {
+        self.highlight.map(|(t, _)| t)
+    }
+
+    /// Screen capture is needed: streaming in Ambilight mode.
+    pub fn capture_wanted(&self) -> bool {
+        self.streaming && self.connection == Connection::Ready && self.desired() == Desired::Ambilight
     }
 
     pub fn record_error(&mut self, message: String) {
@@ -150,17 +207,19 @@ impl Controller {
             errors: self.errors.iter().cloned().collect(),
             config_warnings: self.config_warnings.clone(),
             config: self.cfg.clone(),
+            stream: StreamStatus {
+                streaming: self.streaming,
+                highlight: self.highlight.is_some(),
+                ..StreamStatus::default()
+            },
         }
     }
 
     pub fn handle(&mut self, event: Event, now: Instant) -> Vec<Action> {
         match event {
             Event::Startup => self.startup(),
-            Event::Command(cmd) => self.command(cmd),
-            Event::Tick => match self.retry_at {
-                Some(at) if self.connection == Connection::Offline && now >= at => self.begin_resolve(),
-                _ => Vec::new(),
-            },
+            Event::Command(cmd) => self.command(cmd, now),
+            Event::Tick => self.tick(now),
             Event::Resolved(Ok(r)) => self.on_resolved(r),
             Event::Resolved(Err(e)) => {
                 self.record_error(e);
@@ -168,16 +227,23 @@ impl Controller {
                 Vec::new()
             }
             Event::Discovered(result) => self.on_discovered(result),
-            Event::Applied(Ok(())) => {
+            Event::Applied(Ok(())) | Event::StreamStarted(Ok(())) | Event::StreamStopped(_, Ok(())) => {
                 self.backoff.reset();
                 Vec::new()
             }
-            Event::Applied(Err(e)) => {
-                self.record_error(e);
-                // Whatever was being sent, re-send the user's full state later.
-                self.pending = Some(LightChange::full(&self.cfg.light));
-                self.go_offline(now);
-                Vec::new()
+            Event::Applied(Err(e)) => self.fail(e, now),
+            Event::StreamStarted(Err(e)) | Event::StreamFailed(e) => {
+                self.streaming = false;
+                self.fail(e, now)
+            }
+            Event::StreamStopped(ip, Err(e)) => {
+                if self.ready_ip() == Some(ip) {
+                    self.fail(e, now)
+                } else {
+                    // The user has already switched to another strip.
+                    self.record_error(e);
+                    Vec::new()
+                }
             }
             Event::Tested(result) => {
                 self.test = match result {
@@ -189,6 +255,25 @@ impl Controller {
         }
     }
 
+    /// A command to the strip failed: keep the user's state and go offline.
+    fn fail(&mut self, e: String, now: Instant) -> Vec<Action> {
+        self.record_error(e);
+        self.pending = Some(self.desired());
+        self.go_offline(now);
+        Vec::new()
+    }
+
+    fn tick(&mut self, now: Instant) -> Vec<Action> {
+        let mut actions = Vec::new();
+        if self.highlight.is_some_and(|(_, until)| now >= until) {
+            actions.extend(self.end_highlight());
+        }
+        if self.connection == Connection::Offline && self.retry_at.is_some_and(|at| now >= at) {
+            actions.extend(self.begin_resolve());
+        }
+        actions
+    }
+
     fn startup(&mut self) -> Vec<Action> {
         let mut actions = Vec::new();
         if self.cfg.startup.power_on {
@@ -196,7 +281,7 @@ impl Controller {
                 self.cfg.light.power = true;
                 actions.push(Action::SaveConfig);
             }
-            self.pending = Some(LightChange::full(&self.cfg.light));
+            self.pending = Some(self.desired());
         }
         if self.target().is_some() {
             actions.extend(self.begin_resolve());
@@ -237,6 +322,8 @@ impl Controller {
     fn go_offline(&mut self, now: Instant) {
         let delay = self.backoff.next_delay().unwrap_or(RETRY_MAX);
         self.connection = Connection::Offline;
+        self.streaming = false;
+        self.highlight = None;
         self.retry_at = Some(now + delay);
         self.retry_in_secs = Some(delay.as_secs().max(1));
         info!(?delay, "strip offline, will retry");
@@ -261,8 +348,8 @@ impl Controller {
         self.become_ready(r.device, r.verified);
         match self.pending.take() {
             // Being found is not enough when commands keep failing: the
-            // backoff resets only after the pending change is applied.
-            Some(change) => actions.push(self.apply_action(change)),
+            // backoff resets only after the pending state is reached.
+            Some(desired) => actions.extend(self.drive(desired)),
             None => self.backoff.reset(),
         }
         actions
@@ -294,6 +381,7 @@ impl Controller {
     }
 
     fn select(&mut self, dev: DeviceInfo) -> Vec<Action> {
+        let mut actions = self.leave_stream();
         let d = &mut self.cfg.device;
         d.id = dev.id.clone();
         d.name = dev.name.clone();
@@ -302,30 +390,106 @@ impl Controller {
         self.become_ready(dev, true);
         // A strip the user just picked starts with a fresh retry schedule.
         self.backoff.reset();
-        let mut actions = vec![Action::SaveConfig];
-        let change = self.pending.take().or(self.cfg.light.power.then(|| LightChange::full(&self.cfg.light)));
-        if let Some(change) = change {
-            actions.push(self.apply_action(change));
+        actions.push(Action::SaveConfig);
+        let desired = match self.pending.take() {
+            Some(d) => Some(d),
+            None => self.cfg.light.power.then(|| self.desired()),
+        };
+        if let Some(d) = desired {
+            actions.extend(self.drive(d));
         }
         actions
     }
 
-    fn apply_action(&self, change: LightChange) -> Action {
-        let ip = self.device.as_ref().map(|d| d.ip).expect("apply_action needs a device");
-        Action::Apply { ip, change }
-    }
-
-    /// Sends now when ready, otherwise keeps it for the next connection.
-    fn light(&mut self, change: LightChange) -> Vec<Action> {
-        if self.connection == Connection::Ready && self.device.is_some() {
-            vec![self.apply_action(change)]
+    /// The user's chosen state of the strip.
+    fn desired(&self) -> Desired {
+        if self.cfg.light.power && self.cfg.app.mode == Mode::Ambilight {
+            Desired::Ambilight
         } else {
-            self.pending = Some(change);
-            Vec::new()
+            Desired::Light(LightChange::full(&self.cfg.light))
         }
     }
 
-    fn command(&mut self, cmd: Command) -> Vec<Action> {
+    fn ready_ip(&self) -> Option<Ipv4Addr> {
+        if self.connection == Connection::Ready { self.device.as_ref().map(|d| d.ip) } else { None }
+    }
+
+    /// Moves the strip to `desired` now when ready, otherwise keeps it for the
+    /// next connection.
+    fn drive(&mut self, desired: Desired) -> Vec<Action> {
+        let Some(ip) = self.ready_ip() else {
+            self.pending = Some(desired);
+            return Vec::new();
+        };
+        // The editor overlay keeps the stream; the user's state follows when it ends.
+        if self.highlight.is_some() {
+            return Vec::new();
+        }
+        match (desired, self.streaming) {
+            (Desired::Ambilight, true) => Vec::new(),
+            (Desired::Ambilight, false) => {
+                self.streaming = true;
+                vec![Action::StartStream { ip }]
+            }
+            (Desired::Light(change), true) => {
+                self.streaming = false;
+                vec![Action::StopStream { ip, then: change }]
+            }
+            (Desired::Light(change), false) => vec![Action::Apply { ip, change }],
+        }
+    }
+
+    /// Leaves direct mode on the current strip before switching to another
+    /// one; the old strip keeps the static colour.
+    fn leave_stream(&mut self) -> Vec<Action> {
+        self.highlight = None;
+        match (self.streaming, self.ready_ip()) {
+            (true, Some(ip)) => {
+                self.streaming = false;
+                vec![Action::StopStream { ip, then: LightChange::full(&self.cfg.light) }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn save_and_drive(&mut self) -> Vec<Action> {
+        let mut actions = vec![Action::SaveConfig];
+        let desired = self.desired();
+        actions.extend(self.drive(desired));
+        actions
+    }
+
+    fn start_highlight(&mut self, target: HighlightTarget, now: Instant) -> Vec<Action> {
+        let Some(ip) = self.ready_ip() else {
+            self.record_error("cannot highlight LEDs: the strip is not connected".to_owned());
+            return Vec::new();
+        };
+        let valid = match target {
+            HighlightTarget::Led(i) => i < self.cfg.device.led_count,
+            HighlightTarget::Segment(k) => k < self.cfg.ambilight.segments.len(),
+        };
+        if !valid {
+            self.record_error(format!("nothing to highlight at {target:?}"));
+            return Vec::new();
+        }
+        self.highlight = Some((target, now + HIGHLIGHT_TTL));
+        if self.streaming {
+            Vec::new()
+        } else {
+            self.streaming = true;
+            vec![Action::StartStream { ip }]
+        }
+    }
+
+    fn end_highlight(&mut self) -> Vec<Action> {
+        if self.highlight.take().is_none() {
+            return Vec::new();
+        }
+        let desired = self.desired();
+        self.drive(desired)
+    }
+
+    fn command(&mut self, cmd: Command, now: Instant) -> Vec<Action> {
         match cmd {
             Command::SetStatic { color, brightness } => {
                 if let Some(b) = brightness.filter(|b| !(1..=100).contains(b)) {
@@ -344,16 +508,37 @@ impl Controller {
                 if let Some(b) = brightness {
                     l.brightness = b;
                 }
-                let mut actions = vec![Action::SaveConfig];
-                actions.extend(self.light(LightChange::full(&self.cfg.light)));
-                actions
+                self.cfg.app.mode = Mode::Static;
+                self.save_and_drive()
             }
             Command::SetPower { on } => {
                 self.cfg.light.power = on;
-                let mut actions = vec![Action::SaveConfig];
-                actions.extend(self.light(LightChange::full(&self.cfg.light)));
-                actions
+                self.save_and_drive()
             }
+            Command::SetMode { mode } => {
+                self.cfg.app.mode = mode;
+                self.cfg.light.power = true;
+                self.save_and_drive()
+            }
+            Command::SetAmbilight { settings } => {
+                if let Err(e) = settings.check() {
+                    self.record_error(e);
+                    return Vec::new();
+                }
+                let segments = std::mem::take(&mut self.cfg.ambilight.segments);
+                self.cfg.ambilight = AmbilightConfig { segments, ..settings };
+                vec![Action::SaveConfig]
+            }
+            Command::SetLayout { segments } => {
+                let (clean, warnings) = layout::sanitize(segments, self.cfg.device.led_count);
+                for w in warnings {
+                    self.record_error(w);
+                }
+                self.cfg.ambilight.segments = clean;
+                vec![Action::SaveConfig]
+            }
+            Command::Highlight { target } => self.start_highlight(target, now),
+            Command::StopHighlight => self.end_highlight(),
             Command::SelectDevice { id } => match self.discovered.iter().find(|d| d.id == id).cloned() {
                 Some(dev) => self.select(dev),
                 None => {
@@ -362,12 +547,13 @@ impl Controller {
                 }
             },
             Command::SetManualIp { ip } => {
+                let mut actions = self.leave_stream();
                 self.cfg.device.manual_ip = ip;
                 self.device = None;
                 if self.cfg.light.power {
-                    self.pending = Some(LightChange::full(&self.cfg.light));
+                    self.pending = Some(self.desired());
                 }
-                let mut actions = vec![Action::SaveConfig];
+                actions.push(Action::SaveConfig);
                 actions.extend(self.begin_resolve());
                 actions
             }
@@ -408,6 +594,7 @@ impl Controller {
                     return Vec::new();
                 }
                 self.cfg.device.led_count = count;
+                self.cfg.ambilight.segments = layout::trim(&self.cfg.ambilight.segments, count);
                 vec![Action::SaveConfig]
             }
             Command::SetPresets { presets } => {
@@ -419,11 +606,23 @@ impl Controller {
                 vec![Action::SaveConfig]
             }
             Command::Exit => {
-                let power_off_ip = match (self.cfg.app.exit_action, self.connection, &self.device) {
-                    (ExitAction::Off, Connection::Ready, Some(d)) => Some(d.ip),
+                let ip = self.ready_ip();
+                let stop_stream = match (self.streaming, ip) {
+                    (true, Some(ip)) => Some((
+                        ip,
+                        match self.cfg.app.exit_action {
+                            // A live stream cannot outlive the app: keep the static colour.
+                            ExitAction::Keep => LightChange::full(&self.cfg.light),
+                            ExitAction::Off => LightChange::off(),
+                        },
+                    )),
                     _ => None,
                 };
-                vec![Action::Shutdown { power_off_ip }]
+                let power_off_ip = match (stop_stream.is_none(), self.cfg.app.exit_action, ip) {
+                    (true, ExitAction::Off, Some(ip)) => Some(ip),
+                    _ => None,
+                };
+                vec![Action::Shutdown { power_off_ip, stop_stream }]
             }
         }
     }

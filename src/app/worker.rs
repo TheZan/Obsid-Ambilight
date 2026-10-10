@@ -306,12 +306,16 @@ fn process(ctrl: &mut Controller, link: &mut dyn DeviceLink, ctx: &Ctx, st: &mut
                     st.last_apply = Some(Instant::now());
                     queue.push_back(Event::Applied(link.apply(ip, change)));
                 }
+                Action::StartStream { .. } => {
+                    queue.push_back(Event::StreamStarted(Err("streaming is not available yet".into())))
+                }
+                Action::StopStream { ip, .. } => queue.push_back(Event::StreamStopped(ip, Ok(()))),
                 Action::Test { ip } => queue.push_back(Event::Tested(link.handshake(ip))),
                 Action::SaveConfig => {
                     st.save_at.get_or_insert(Instant::now() + ctx.options.save_delay);
                 }
                 Action::OpenSettings => (ctx.notify)(Notice::OpenSettings),
-                Action::Shutdown { power_off_ip } => {
+                Action::Shutdown { power_off_ip, stop_stream: _ } => {
                     if let Some(ip) = power_off_ip
                         && let Err(e) = link.power_off_for_exit(ip)
                     {

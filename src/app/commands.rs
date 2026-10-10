@@ -4,7 +4,8 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ExitAction, Language};
+use crate::ambilight::layout::HighlightTarget;
+use crate::config::{AmbilightConfig, ExitAction, Language, Mode, Segment};
 use crate::protocol::Rgb;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +42,22 @@ pub enum Command {
     SetPresets {
         presets: Vec<Rgb>,
     },
+    /// Static or Ambilight; implies power on.
+    SetMode {
+        mode: Mode,
+    },
+    /// Every Ambilight setting except `segments`, which is ignored here (see `SetLayout`).
+    SetAmbilight {
+        settings: AmbilightConfig,
+    },
+    SetLayout {
+        segments: Vec<Segment>,
+    },
+    /// Layout editor: light one LED or segment for a few seconds.
+    Highlight {
+        target: HighlightTarget,
+    },
+    StopHighlight,
     /// Tray "Exit" only; refused over IPC.
     Exit,
 }
@@ -56,7 +73,8 @@ impl Command {
 }
 
 /// Collapses a burst: adjacent `SetStatic` merge field by field (later wins),
-/// adjacent `SetPower` and `SetPresets` keep the last one; order is preserved.
+/// adjacent `SetPower`, `SetPresets`, `SetAmbilight`, `SetLayout` and
+/// `Highlight` keep the last one; order is preserved.
 pub fn coalesce(cmds: Vec<Command>) -> Vec<Command> {
     let mut out: Vec<Command> = Vec::with_capacity(cmds.len());
     for cmd in cmds {
@@ -73,7 +91,10 @@ pub fn coalesce(cmds: Vec<Command>) -> Vec<Command> {
                 }
             }
             (Some(last @ Command::SetPower { .. }), cmd @ Command::SetPower { .. })
-            | (Some(last @ Command::SetPresets { .. }), cmd @ Command::SetPresets { .. }) => *last = cmd,
+            | (Some(last @ Command::SetPresets { .. }), cmd @ Command::SetPresets { .. })
+            | (Some(last @ Command::SetAmbilight { .. }), cmd @ Command::SetAmbilight { .. })
+            | (Some(last @ Command::SetLayout { .. }), cmd @ Command::SetLayout { .. })
+            | (Some(last @ Command::Highlight { .. }), cmd @ Command::Highlight { .. }) => *last = cmd,
             (_, cmd) => out.push(cmd),
         }
     }
