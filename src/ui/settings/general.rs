@@ -34,6 +34,12 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, backend: &Backend) 
     if ui.checkbox(&mut power_on, s.power_on_start).changed() {
         backend.send(Command::SetPowerOnStart { enabled: power_on });
     }
+    ui.add_space(8.0);
+    let mut autostart = cfg.startup.autostart;
+    if ui.checkbox(&mut autostart, s.autostart_label).changed() {
+        backend.send(Command::SetAutostart { enabled: autostart });
+    }
+    ui.weak(s.autostart_hint);
 
     ui.add_space(8.0);
     ui.label(s.exit_action_label);

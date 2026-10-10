@@ -36,6 +36,13 @@ pub fn summary(snap: &Snapshot) -> String {
     let _ = writeln!(t, "session open: {}", snap.session_open);
     let _ = writeln!(t, "manual ip: {:?}", snap.config.device.manual_ip);
     let _ = writeln!(t, "mode: {:?} (power {})", snap.config.app.mode, snap.config.light.power);
+    let paused = if snap.dark.is_empty() {
+        "none".to_owned()
+    } else {
+        snap.dark.iter().map(|d| format!("{d:?}")).collect::<Vec<_>>().join(", ")
+    };
+    let _ = writeln!(t, "paused: {paused}");
+    let _ = writeln!(t, "autostart: {}", snap.config.startup.autostart);
     let st = &snap.stream;
     let _ = writeln!(t, "stream: {} (highlight {}, sent {:.1} fps)", st.streaming, st.highlight, st.send_fps);
     match &st.capture {
@@ -87,6 +94,9 @@ pub fn show(ui: &mut egui::Ui, s: &Strings, snap: &Snapshot, copied_at: &mut Opt
         ui.end_row();
         ui.label(s.mode_label);
         ui.label(mode_text(s, snap));
+        ui.end_row();
+        ui.label(s.pause_label);
+        ui.label(if snap.dark.is_empty() { s.pause_none.to_owned() } else { i18n::dark_reasons(s, &snap.dark) });
         ui.end_row();
         ui.label(s.capture_label);
         match &snap.stream.capture {

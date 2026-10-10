@@ -99,6 +99,22 @@ fn ambilight_tab_is_a_command_line_tab() {
     assert_eq!(Tab::from_index(Tab::Ambilight.index()), Tab::Ambilight);
 }
 
+#[test]
+fn summary_reports_dark_reasons_and_autostart() {
+    use obsid_ambilight::app::state::Dark;
+    let mut s = Controller::new(
+        Config::default(),
+        vec![],
+        Backoff::with_seed(Duration::from_secs(1), Duration::from_secs(1), None, 1),
+    )
+    .snapshot(true);
+    let text = summary(&s);
+    assert!(text.contains("paused: none"), "{text}");
+    assert!(text.contains("autostart: true"), "{text}");
+    s.dark = vec![Dark::Locked];
+    assert!(summary(&s).contains("paused: Locked"), "{}", summary(&s));
+}
+
 mod layout_editor {
     use eframe::egui::{Rect, pos2, vec2};
     use obsid_ambilight::config::Segment;
