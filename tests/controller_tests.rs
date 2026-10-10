@@ -6,7 +6,7 @@ use obsid_ambilight::app::commands::{Command, coalesce};
 use obsid_ambilight::app::controller::{
     Action, Controller, Event, HIGHLIGHT_TTL, LightChange, MAX_ERRORS, RETRY_BASE, Resolved, Target,
 };
-use obsid_ambilight::app::state::{Connection, DeviceInfo, TestState};
+use obsid_ambilight::app::state::{Connection, Dark, DeviceInfo, TestState};
 use obsid_ambilight::config::{AmbilightConfig, Config, ExitAction, Mode, Segment};
 use obsid_ambilight::protocol::Rgb;
 use obsid_ambilight::reconnect::Backoff;
@@ -643,4 +643,150 @@ fn coalesce_keeps_the_last_of_ambilight_runs() {
             Command::Highlight { target: HighlightTarget::Led(2) },
         ]
     );
+}
+
+// ---------- Windows lifecycle ----------
+
+fn cmd(c: &mut Controller, command: Command, at: Instant) -> Vec<Action> {
+    c.handle(Event::Command(command), at)
+}
+
+#[test]
+fn startup_syncs_autostart_first() {
+    let mut cfg = saved_cfg();
+    let a = ctrl(cfg.clone()).handle(Event::Startup, Instant::now());
+    assert_eq!(a.first(), Some(&Action::SyncAutostart { enabled: true }));
+    cfg.startup.autostart = false;
+    let a = ctrl(cfg).handle(Event::Startup, Instant::now());
+    assert_eq!(a.first(), Some(&Action::SyncAutostart { enabled: false }));
+}
+
+#[test]
+fn set_autostart_saves_and_syncs() {
+    let (mut c, now) = ready();
+    let a = cmd(&mut c, Command::SetAutostart { enabled: false }, now);
+    assert_eq!(a, vec![Action::SaveConfig, Action::SyncAutostart { enabled: false }]);
+    assert!(!c.config().startup.autostart);
+}
+
+#[test]
+fn autostart_failure_is_reported() {
+    let (mut c, now) = ready();
+    assert!(c.handle(Event::AutostartSynced(Err("access denied".into())), now).is_empty());
+    assert!(c.snapshot(false).errors.iter().any(|e| e.contains("autostart") && e.contains("access denied")));
+}
+
+#[test]
+fn locking_turns_a_static_strip_off_and_unlocking_restores_it() {
+    let (mut c, now) = ready();
+    let before = c.config().clone();
+    assert_eq!(
+        cmd(&mut c, Command::Darken { reason: Dark::Locked }, now),
+        vec![Action::Apply { ip: IP, change: LightChange::off() }]
+    );
+    assert_eq!(c.snapshot(false).dark, vec![Dark::Locked]);
+    assert!(cmd(&mut c, Command::Darken { reason: Dark::Locked }, now).is_empty(), "repeats are ignored");
+    assert_eq!(
+        cmd(&mut c, Command::Undarken { reason: Dark::Locked }, now),
+        vec![Action::Apply { ip: IP, change: full_on(c.config()) }]
+    );
+    assert!(cmd(&mut c, Command::Undarken { reason: Dark::Locked }, now).is_empty());
+    assert_eq!(c.config(), &before, "Windows events never change the config");
+}
+
+#[test]
+fn locking_stops_ambilight_and_unlocking_restarts_it() {
+    let (mut c, now) = streaming();
+    let a = cmd(&mut c, Command::Darken { reason: Dark::Locked }, now);
+    assert_eq!(a, vec![Action::StopStream { ip: IP, then: LightChange::off() }]);
+    assert!(!c.capture_wanted());
+    c.handle(Event::StreamStopped(IP, Ok(())), now);
+    assert_eq!(cmd(&mut c, Command::Undarken { reason: Dark::Locked }, now), vec![Action::StartStream { ip: IP }]);
+}
+
+#[test]
+fn the_strip_stays_dark_until_every_reason_is_gone() {
+    let (mut c, now) = ready();
+    cmd(&mut c, Command::Darken { reason: Dark::Locked }, now);
+    assert!(cmd(&mut c, Command::Darken { reason: Dark::DisplayOff }, now).is_empty());
+    assert!(cmd(&mut c, Command::Undarken { reason: Dark::Locked }, now).is_empty(), "display still off");
+    assert_eq!(c.snapshot(false).dark, vec![Dark::DisplayOff]);
+    let a = cmd(&mut c, Command::Undarken { reason: Dark::DisplayOff }, now);
+    assert_eq!(a, vec![Action::Apply { ip: IP, change: full_on(c.config()) }]);
+}
+
+#[test]
+fn changes_while_dark_apply_after_it() {
+    let (mut c, now) = ready();
+    cmd(&mut c, Command::Darken { reason: Dark::Locked }, now);
+    let a = cmd(&mut c, Command::SetStatic { color: Some(Rgb::new(5, 6, 7)), brightness: None }, now);
+    assert_eq!(a, vec![Action::SaveConfig], "saved, not sent");
+    assert_eq!(cmd(&mut c, Command::SetMode { mode: Mode::Ambilight }, now), vec![Action::SaveConfig]);
+    assert_eq!(cmd(&mut c, Command::Undarken { reason: Dark::Locked }, now), vec![Action::StartStream { ip: IP }]);
+    assert_eq!(c.config().light.color, Rgb::new(5, 6, 7));
+}
+
+#[test]
+fn darkness_while_offline_is_applied_after_reconnect() {
+    let (mut c, now) = ready();
+    c.handle(Event::Command(Command::SetPower { on: true }), now);
+    c.handle(Event::Applied(Err("timeout".into())), now);
+    assert!(cmd(&mut c, Command::Darken { reason: Dark::Sleep }, now).is_empty(), "nothing to send offline");
+    let at = c.next_deadline().unwrap();
+    c.handle(Event::Tick, at);
+    let a = c.handle(Event::Resolved(Ok(Resolved { device: dev("dcda0cd778bc", IP), verified: true })), at);
+    assert_eq!(a, vec![Action::Apply { ip: IP, change: LightChange::off() }]);
+}
+
+#[test]
+fn sleep_with_a_failed_stop_resumes_after_reconnect() {
+    let (mut c, now) = streaming();
+    cmd(&mut c, Command::Darken { reason: Dark::Sleep }, now);
+    c.handle(Event::StreamStopped(IP, Err("network down".into())), now);
+    assert_eq!(c.snapshot(false).connection, Connection::Offline);
+    assert!(cmd(&mut c, Command::Undarken { reason: Dark::Sleep }, now).is_empty(), "still offline");
+    let at = c.next_deadline().unwrap();
+    c.handle(Event::Tick, at);
+    let a = c.handle(Event::Resolved(Ok(Resolved { device: dev("dcda0cd778bc", IP), verified: true })), at);
+    assert_eq!(a, vec![Action::StartStream { ip: IP }]);
+}
+
+#[test]
+fn highlights_are_refused_and_ended_while_dark() {
+    let (mut c, now) = ready();
+    cmd(&mut c, Command::Highlight { target: HighlightTarget::Led(1) }, now);
+    c.handle(Event::StreamStarted(Ok(())), now);
+    let a = cmd(&mut c, Command::Darken { reason: Dark::Locked }, now);
+    assert_eq!(a, vec![Action::StopStream { ip: IP, then: LightChange::off() }], "the overlay ends");
+    assert_eq!(c.highlight(), None);
+    assert!(cmd(&mut c, Command::Highlight { target: HighlightTarget::Led(1) }, now).is_empty());
+    assert!(c.snapshot(false).errors.iter().any(|e| e.contains("highlight")));
+}
+
+#[test]
+fn ending_the_session_always_turns_the_strip_off() {
+    let (mut c, now) = ready();
+    assert_eq!(c.config().app.exit_action, ExitAction::Keep);
+    assert_eq!(
+        cmd(&mut c, Command::EndSession, now),
+        vec![Action::Shutdown { power_off_ip: Some(IP), stop_stream: None }]
+    );
+    let (mut c, now) = streaming();
+    assert_eq!(
+        cmd(&mut c, Command::EndSession, now),
+        vec![Action::Shutdown { power_off_ip: None, stop_stream: Some((IP, LightChange::off())) }]
+    );
+    let mut c = ctrl(saved_cfg());
+    assert_eq!(
+        cmd(&mut c, Command::EndSession, Instant::now()),
+        vec![Action::Shutdown { power_off_ip: None, stop_stream: None }]
+    );
+}
+
+#[test]
+fn lifecycle_commands_are_tray_only() {
+    for c in [Command::EndSession, Command::Darken { reason: Dark::Sleep }, Command::Undarken { reason: Dark::Sleep }] {
+        assert!(!c.allowed_over_ipc(), "{c:?}");
+    }
+    assert!(Command::SetAutostart { enabled: true }.allowed_over_ipc());
 }

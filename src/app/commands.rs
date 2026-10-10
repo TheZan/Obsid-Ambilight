@@ -4,6 +4,7 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize};
 
+use super::state::Dark;
 use crate::ambilight::layout::HighlightTarget;
 use crate::config::{AmbilightConfig, ExitAction, Language, Mode, Segment};
 use crate::protocol::Rgb;
@@ -58,6 +59,18 @@ pub enum Command {
         target: HighlightTarget,
     },
     StopHighlight,
+    /// Windows locked the session, went to sleep or turned the display off.
+    Darken {
+        reason: Dark,
+    },
+    Undarken {
+        reason: Dark,
+    },
+    /// Windows is shutting down or logging off: strip off, then stop (tray only).
+    EndSession,
+    SetAutostart {
+        enabled: bool,
+    },
     /// Tray "Exit" only; refused over IPC.
     Exit,
 }
@@ -68,7 +81,7 @@ impl Command {
     }
 
     pub fn allowed_over_ipc(&self) -> bool {
-        !matches!(self, Self::Exit)
+        !matches!(self, Self::Exit | Self::EndSession | Self::Darken { .. } | Self::Undarken { .. })
     }
 }
 

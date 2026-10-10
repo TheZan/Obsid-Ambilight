@@ -2,14 +2,14 @@
 //! the clock: the worker feeds it events with the current time and executes
 //! the actions it returns, feeding results back as events.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use tracing::{info, warn};
 
 use super::commands::Command;
-use super::state::{Connection, DeviceInfo, Snapshot, StreamStatus, TestState};
+use super::state::{Connection, Dark, DeviceInfo, Snapshot, StreamStatus, TestState};
 use crate::ambilight::layout::{self, HighlightTarget};
 use crate::config::{self, AmbilightConfig, Config, ExitAction, LightConfig, Mode};
 use crate::protocol::Rgb;
@@ -83,6 +83,8 @@ pub enum Event {
     StreamStopped(Ipv4Addr, Result<(), String>),
     /// The running stream lost its session.
     StreamFailed(String),
+    /// Result of `Action::SyncAutostart`.
+    AutostartSynced(Result<(), String>),
     /// Time has passed; lets due retries and highlight expiry fire.
     Tick,
 }
@@ -106,6 +108,10 @@ pub enum Action {
     },
     Test {
         ip: Ipv4Addr,
+    },
+    /// Make the Windows Run entry match the setting.
+    SyncAutostart {
+        enabled: bool,
     },
     SaveConfig,
     OpenSettings,
@@ -138,6 +144,8 @@ pub struct Controller {
     streaming: bool,
     /// Layout editor overlay and when it expires.
     highlight: Option<(HighlightTarget, Instant)>,
+    /// Windows reasons that keep the strip dark.
+    dark: BTreeSet<Dark>,
 }
 
 impl Controller {
@@ -159,6 +167,7 @@ impl Controller {
             config_warnings,
             streaming: false,
             highlight: None,
+            dark: BTreeSet::new(),
         }
     }
 
@@ -212,6 +221,7 @@ impl Controller {
                 highlight: self.highlight.is_some(),
                 ..StreamStatus::default()
             },
+            dark: self.dark.iter().copied().collect(),
         }
     }
 
@@ -245,6 +255,11 @@ impl Controller {
                     Vec::new()
                 }
             }
+            Event::AutostartSynced(Ok(())) => Vec::new(),
+            Event::AutostartSynced(Err(e)) => {
+                self.record_error(format!("could not update autostart: {e}"));
+                Vec::new()
+            }
             Event::Tested(result) => {
                 self.test = match result {
                     Ok(d) => TestState::Ok { millis: d.as_millis() as u64 },
@@ -275,7 +290,7 @@ impl Controller {
     }
 
     fn startup(&mut self) -> Vec<Action> {
-        let mut actions = Vec::new();
+        let mut actions = vec![Action::SyncAutostart { enabled: self.cfg.startup.autostart }];
         if self.cfg.startup.power_on {
             if !self.cfg.light.power {
                 self.cfg.light.power = true;
@@ -403,6 +418,9 @@ impl Controller {
 
     /// The user's chosen state of the strip.
     fn desired(&self) -> Desired {
+        if !self.dark.is_empty() {
+            return Desired::Light(LightChange::off());
+        }
         if self.cfg.light.power && self.cfg.app.mode == Mode::Ambilight {
             Desired::Ambilight
         } else {
@@ -454,12 +472,19 @@ impl Controller {
 
     fn save_and_drive(&mut self) -> Vec<Action> {
         let mut actions = vec![Action::SaveConfig];
-        let desired = self.desired();
-        actions.extend(self.drive(desired));
+        // While Windows keeps the strip dark, the change waits for the light.
+        if self.dark.is_empty() {
+            let desired = self.desired();
+            actions.extend(self.drive(desired));
+        }
         actions
     }
 
     fn start_highlight(&mut self, target: HighlightTarget, now: Instant) -> Vec<Action> {
+        if !self.dark.is_empty() {
+            self.record_error("cannot highlight LEDs while Windows keeps the strip dark".to_owned());
+            return Vec::new();
+        }
         let Some(ip) = self.ready_ip() else {
             self.record_error("cannot highlight LEDs: the strip is not connected".to_owned());
             return Vec::new();
@@ -604,6 +629,34 @@ impl Controller {
                 }
                 self.cfg.light.presets = clean;
                 vec![Action::SaveConfig]
+            }
+            Command::Darken { reason } => {
+                let first = self.dark.is_empty();
+                if !self.dark.insert(reason) || !first {
+                    return Vec::new();
+                }
+                self.highlight = None;
+                let desired = self.desired();
+                self.drive(desired)
+            }
+            Command::Undarken { reason } => {
+                if !self.dark.remove(&reason) || !self.dark.is_empty() {
+                    return Vec::new();
+                }
+                let desired = self.desired();
+                self.drive(desired)
+            }
+            Command::EndSession => {
+                let (power_off_ip, stop_stream) = match (self.streaming, self.ready_ip()) {
+                    (true, Some(ip)) => (None, Some((ip, LightChange::off()))),
+                    (false, Some(ip)) => (Some(ip), None),
+                    _ => (None, None),
+                };
+                vec![Action::Shutdown { power_off_ip, stop_stream }]
+            }
+            Command::SetAutostart { enabled } => {
+                self.cfg.startup.autostart = enabled;
+                vec![Action::SaveConfig, Action::SyncAutostart { enabled }]
             }
             Command::Exit => {
                 let ip = self.ready_ip();

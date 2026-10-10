@@ -116,6 +116,15 @@ pub struct StreamStatus {
     pub capture: Option<CaptureStatus>,
 }
 
+/// Why the strip is dark regardless of the user's choice (Windows events).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Dark {
+    Sleep,
+    Locked,
+    DisplayOff,
+}
+
 /// Everything the UI shows, published by the worker after every change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -134,4 +143,5 @@ pub struct Snapshot {
     pub config_warnings: Vec<String>,
     pub config: Config,
     pub stream: StreamStatus,
+    pub dark: Vec<Dark>,
 }

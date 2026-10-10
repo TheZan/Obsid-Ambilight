@@ -356,6 +356,7 @@ fn process(ctrl: &mut Controller, link: &mut dyn DeviceLink, ctx: &Ctx, st: &mut
                     st.last_apply = Some(Instant::now());
                     queue.push_back(Event::StreamStopped(ip, link.stop_stream(ip, then, false)));
                 }
+                Action::SyncAutostart { .. } => queue.push_back(Event::AutostartSynced(Ok(()))),
                 Action::Test { ip } => queue.push_back(Event::Tested(link.handshake(ip))),
                 Action::SaveConfig => {
                     st.save_at.get_or_insert(Instant::now() + ctx.options.save_delay);
