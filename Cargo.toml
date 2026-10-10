@@ -57,6 +57,9 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[build-dependencies]
+winresource = { version = "0.1.31", default-features = false }
+
 [profile.release]
 opt-level = "s"
 lto = true
