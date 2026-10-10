@@ -153,3 +153,7 @@ Apple Home after mode switches during Stage 4 soak tests.
   `deactivate_fx_mode` (relevant for crash/abnormal exit).
 - Error format for an expired token.
 - Whether `udp_chroma_sess_new` differs from `udp_sess_new` (not needed so far).
+- Whether `set_bright` scales `update_leds` colours in direct mode (the app pins
+  hardware brightness to 100 and scales frames itself; checklist A10).
+- Stability of 25–30 FPS streams and of the Apple Home hand-over after long
+  Ambilight sessions (checklist A9).

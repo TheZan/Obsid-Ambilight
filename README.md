@@ -14,7 +14,8 @@ Ambilight, without Yeelight Station, SignalRGB, cloud accounts or a web view.
 | Stage 0 — Direct mode + `update_leds` streaming at 20 FPS | ✅ protocol confirmed |
 | Stage 0 — Leaving direct mode (`deactivate_fx_mode`) | ✅ confirmed on hardware; Apple Home outages seen twice, not reproducible |
 | Stage 1 — tray, settings window (RU/EN), static control, reconnect, single instance | ✅ implemented and verified on hardware |
-| Ambilight, Windows lifecycle (autostart, shutdown, sleep) | Stages 2–3 |
+| Stage 2 — Ambilight: DXGI capture (HDR, letterbox), segment layout editor, streaming, resume | ✅ implemented, hardware checklist in docs/testing.md |
+| Windows lifecycle (autostart, shutdown, sleep) | Stage 3 |
 
 Details: [docs/protocol.md](docs/protocol.md), hardware checklist:
 [docs/testing.md](docs/testing.md), Stage 1 design:
@@ -45,9 +46,14 @@ target/release/obsid-ambilight.exe
 - Right-click the tray icon for colour presets, brightness, power, search and
   exit; double-click it (or choose «Настройки…») for the settings window.
 - Starting the exe again opens the settings of the running instance.
-- Settings: `%APPDATA%\ObsidAmbilight\config.toml` (written by the app;
+- Settings: `%APPDATA%\ObsidAmbilight\config.toml` (written by the app,
+  including `[ambilight]` and the `[[ambilight.segments]]` layout;
   an unreadable file is kept as `config.bad-<time>.toml`).
   Logs: `%APPDATA%\ObsidAmbilight\logs\`.
+- Ambilight: tray → «Ambilight», or Settings → «Ambilight». Build the layout
+  there: «Поиск диода» shows where each LED is; draw one segment per straight
+  run of the strip (one line on the screen schematic, front view). Ambilight
+  resumes by itself after a restart or a lost connection.
 - The interface is in Russian or English (follows Windows, can be changed in
   the settings).
 
@@ -70,7 +76,9 @@ are several). `-vv` logs every packet with the session token redacted.
 ```text
 src/
   main.rs        app entry: background process, or --settings window
+  ambilight/     layout, colour maths, letterbox, smoothing, pipeline (no Win32)
   app/           controller state machine, device worker thread, UDP link
+  capture/       DXGI Desktop Duplication, monitors, SDR white level, capture thread
   config.rs      config.toml: lenient load, atomic save
   i18n.rs        Russian / English strings
   ipc/           named pipe between the settings window and the background process

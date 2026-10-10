@@ -55,3 +55,27 @@ still controls the strip.
 | S10 | Corrupt `config.toml`, start | App starts with defaults, `config.bad-*.toml` kept, warning in Diagnostics | ✅ 2026-10-10 (user), Apple Home OK |
 | S11 | Memory/CPU in Static (background process) | ≤ 35 MB, ≤ 1 % CPU on average | ✅ 13.1 MB working set, 2.4 MB private, 0.000 s CPU over 60 s idle (16 cores) |
 | S12 | Memory of the settings process while open | recorded | ✅ ~125 MB working set, ~139 MB private (OpenGL); freed on close |
+
+## Stage 2 on hardware
+
+Run `target\release\obsid-ambilight.exe`. After each row, check that Apple Home
+still controls the strip. GPU tests: `cargo test --test capture_tests -- --ignored`.
+
+| # | Scenario | Expected | Result |
+|---|---|---|---|
+| A1 | `obsid-poc --ip <ip> --leds 60 direct --pattern ends`, then `--pattern chase` | Real LED count and where index 0 is | ⏳ |
+| A2 | Settings → Ambilight → «Поиск диода» along the whole strip | One white LED, red behind, green ahead | ⏳ |
+| A3 | Build the two-loop spiral layout (outer and inner loops as segments) | Both loops follow the screen edges | ⏳ |
+| A4 | Tray → «Ambilight» on the desktop, then «Статика» | Stream starts within ~1 s; static colour returns | ⏳ |
+| A5 | Full-screen game (exclusive and borderless) | Colours follow the game | ⏳ |
+| A6 | 21:9 film in a 16:9 player | Bars ignored after ~1 s, colours from the picture | ⏳ |
+| A7 | Toggle Windows HDR while Ambilight runs | Short pause, then colours not washed out; Diagnostics shows HDR and SDR white | ⏳ |
+| A8 | UAC prompt / Win+L | Yellow dot, last colours held, capture resumes afterwards | ⏳ |
+| A9 | 20, 25, 30 FPS for 10 min each | Smooth; Diagnostics send FPS ≤ setting; Apple Home OK | ⏳ |
+| A10 | Ambilight brightness 30 % vs 100 % | Visibly dimmer; note whether `set_bright` affects direct mode | ⏳ |
+| A11 | Unplug the strip during Ambilight, plug back | Offline, retries; Ambilight resumes by itself | ⏳ |
+| A12 | Exit with «Оставить цвет» / «Выключить ленту» from Ambilight | Static colour / off | ⏳ |
+| A13 | Kill the process in Task Manager during Ambilight; wait 30 s | Record what the strip shows (open question from Stage 0) | ⏳ |
+| A14 | Restart the app in Ambilight mode | Ambilight resumes automatically | ⏳ |
+| A15 | CPU and RAM of the background process in Ambilight, 25 FPS, 1440p, 5 min | ≤ 3 % CPU average, ≤ 60 MB RAM | ⏳ |
+| A16 | CPU and RAM in Static after leaving Ambilight | Stage 1 targets (≤ 35 MB, ≤ 1 % CPU) | ⏳ |
